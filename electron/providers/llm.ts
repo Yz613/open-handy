@@ -37,6 +37,8 @@ export async function processWithLLM(
       return await processWithGemini(rawTranscript, preset, settings);
     case 'openrouter':
       return await processWithOpenRouter(rawTranscript, preset, settings);
+    case 'cloudflare':
+      return await processWithCloudflare(rawTranscript, preset, settings);
     case 'custom':
       return await processWithCustom(rawTranscript, preset, settings);
     default:
@@ -388,4 +390,59 @@ async function processWithCustom(
   const text = data?.choices?.[0]?.message?.content?.trim() || rawTranscript;
 
   return { text, provider: 'custom', model };
+}
+
+// 9. Cloudflare Workers AI LLM (e.g. Llama 3.3, Mistral)
+async function processWithCloudflare(
+  rawTranscript: string,
+  preset: PromptPreset,
+  settings: AppSettings
+): Promise<LLMResult> {
+  const { accountId, apiToken, llmModel, gatewayUrl } = settings.cloudflare;
+  if (!accountId || !apiToken) {
+    throw new Error('Cloudflare Account ID and API Token are required in Settings.');
+  }
+
+  const model = llmModel || '@cf/meta/llama-3.3-70b-instruct';
+  let url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+  if (gatewayUrl && gatewayUrl.trim()) {
+    const cleanGw = gatewayUrl.trim().replace(/\/$/, '');
+    url = cleanGw.includes('/workers-ai')
+      ? `${cleanGw}/run/${model}`
+      : `${cleanGw}/workers-ai/run/${model}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: preset.systemPrompt },
+        { role: 'user', content: rawTranscript },
+      ],
+      temperature: 0.3,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Cloudflare LLM error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as any;
+  if (data.success === false && data.errors && data.errors.length > 0) {
+    const errMsg = data.errors.map((e: any) => e.message || JSON.stringify(e)).join(', ');
+    throw new Error(`Cloudflare error: ${errMsg}`);
+  }
+
+  // Cloudflare Workers AI returns { result: { response: "..." } }
+  const text = data?.result?.response?.trim() || rawTranscript;
+  return {
+    text,
+    provider: 'cloudflare',
+    model,
+  };
 }

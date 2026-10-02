@@ -1,5 +1,5 @@
-export type STTProviderId = 'azure' | 'vercel' | 'groq' | 'openai' | 'gemini' | 'deepgram' | 'custom';
-export type LLMProviderId = 'none' | 'azure' | 'vercel' | 'groq' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom';
+export type STTProviderId = 'azure' | 'vercel' | 'groq' | 'openai' | 'gemini' | 'deepgram' | 'cloudflare' | 'custom';
+export type LLMProviderId = 'none' | 'azure' | 'vercel' | 'groq' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'cloudflare' | 'custom';
 
 export interface AzureConfig {
   endpoint: string;       // e.g. https://my-resource.openai.azure.com
@@ -57,6 +57,14 @@ export interface CustomProviderConfig {
   customHeaders?: Record<string, string>;
 }
 
+export interface CloudflareConfig {
+  accountId: string;      // Cloudflare Account ID
+  apiToken: string;       // Cloudflare API Token (Workers AI Read/Edit permissions)
+  sttModel: string;       // e.g. "@cf/openai/whisper" or "@cf/openai/whisper-large-v3-turbo"
+  llmModel: string;       // e.g. "@cf/meta/llama-3.3-70b-instruct" or "@cf/meta/llama-3.1-8b-instruct"
+  gatewayUrl?: string;    // Optional Cloudflare AI Gateway URL (e.g. https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id})
+}
+
 export interface PromptPreset {
   id: string;
   name: string;
@@ -84,6 +92,7 @@ export interface AppSettings {
   anthropic: AnthropicConfig;
   deepgram: DeepgramConfig;
   openrouter: OpenRouterConfig;
+  cloudflare: CloudflareConfig;
   custom: CustomProviderConfig;
 
   // Custom prompt presets

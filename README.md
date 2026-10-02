@@ -19,6 +19,7 @@ Plug in any API key from any model and dictate directly into any application on 
   - **Anthropic Claude**: Claude 3.5 Sonnet / Haiku / Claude 3.7 Sonnet for text cleanup and prompt formatting.
   - **Deepgram**: Nova-2 & Nova-3 dedicated speech models.
   - **OpenRouter**: Access 100+ models with one API key.
+  - **Cloudflare Workers AI & AI Gateway**: 100% serverless Whisper STT (`@cf/openai/whisper`) & Llama 3.3 on Cloudflare's edge GPUs — zero servers to spin up or manage.
   - **Custom / Local OpenAI-Compatible Server**: Connect to Ollama, LM Studio, vLLM, Together AI, or your own local Whisper server.
 - **Interactive Hotkey Recorder**: Fully customizable global shortcut in Settings (defaults to `Option + Space`), supporting both **Toggle** (tap to start / tap to stop) and **Push-to-Talk**.
 - **Auto-Paste & Output Controls**:
@@ -64,3 +65,21 @@ To allow OpenHandy to automatically paste text into other apps (like Slack, Note
 4. Speak your thoughts.
 5. Press the shortcut again to stop.
 6. The audio is transcribed, polished (if enabled), and automatically typed into your active field!
+
+---
+
+## ☁️ Zero-Server Cloudflare Deployment
+
+If you want a completely serverless backend with **zero servers to spin up or maintain**:
+
+### Option 1: Direct Cloudflare Workers AI
+1. Go to OpenHandy **Settings** → **API Keys & Providers** → **Cloudflare Workers AI**.
+2. Enter your Cloudflare **Account ID** and **API Token**.
+3. Select **Cloudflare Workers AI** in **Pipeline & Models**. Transcription runs directly on Cloudflare edge GPUs!
+
+### Option 2: Deploy your own Cloudflare Worker
+Deploy the included serverless worker in 1 step:
+```bash
+npm run deploy:worker
+```
+This deploys a serverless endpoint on Cloudflare with endpoints for `/transcribe` (Whisper) and `/process` (Llama 3.3).

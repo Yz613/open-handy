@@ -177,6 +177,21 @@ export async function testProviderConnection(
         return { success: false, message: `Endpoint returned ${res.status}.` };
       }
 
+      case 'cloudflare': {
+        const { accountId, apiToken } = settings.cloudflare;
+        if (!accountId || !apiToken) {
+          return { success: false, message: 'Cloudflare Account ID and API Token are required.' };
+        }
+        const res = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', {
+          headers: { Authorization: `Bearer ${apiToken}` },
+        });
+        if (res.ok) {
+          return { success: true, message: 'Cloudflare API Token verified successfully!' };
+        }
+        const text = await res.text();
+        return { success: false, message: `Cloudflare returned ${res.status}: ${text.slice(0, 100)}` };
+      }
+
       default:
         return { success: false, message: `Unknown provider: ${provider}` };
     }

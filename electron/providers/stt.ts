@@ -26,6 +26,8 @@ export async function transcribeAudio(
       return await transcribeWithGemini(audioBuffer, mimeType, settings);
     case 'deepgram':
       return await transcribeWithDeepgram(audioBuffer, mimeType, settings);
+    case 'cloudflare':
+      return await transcribeWithCloudflare(audioBuffer, mimeType, settings);
     case 'custom':
       return await transcribeWithCustom(audioBuffer, mimeType, settings);
     default:
@@ -346,6 +348,58 @@ async function transcribeWithCustom(
   return {
     text: data.text || '',
     provider: 'custom',
+    model,
+  };
+}
+
+// 8. Cloudflare Workers AI Whisper
+async function transcribeWithCloudflare(
+  audioBuffer: Buffer,
+  mimeType: string,
+  settings: AppSettings
+): Promise<STTResult> {
+  const { accountId, apiToken, sttModel, gatewayUrl } = settings.cloudflare;
+  if (!accountId || !apiToken) {
+    throw new Error('Cloudflare Account ID and API Token are required in Settings.');
+  }
+
+  const model = sttModel || '@cf/openai/whisper';
+  let url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+  if (gatewayUrl && gatewayUrl.trim()) {
+    const cleanGw = gatewayUrl.trim().replace(/\/$/, '');
+    url = cleanGw.includes('/workers-ai')
+      ? `${cleanGw}/run/${model}`
+      : `${cleanGw}/workers-ai/run/${model}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiToken}`,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: audioBuffer,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Cloudflare Workers AI error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as {
+    result?: { text?: string };
+    success?: boolean;
+    errors?: any[];
+  };
+
+  if (data.success === false && data.errors && data.errors.length > 0) {
+    const errMsg = data.errors.map((e: any) => e.message || JSON.stringify(e)).join(', ');
+    throw new Error(`Cloudflare error: ${errMsg}`);
+  }
+
+  return {
+    text: data.result?.text || '',
+    provider: 'cloudflare',
     model,
   };
 }

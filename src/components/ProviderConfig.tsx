@@ -755,7 +755,119 @@ export const ProviderConfig: React.FC<ProviderConfigProps> = ({ settings, onUpda
         </div>
       </div>
 
-      {/* 9. Custom OpenAI-Compatible Server (Ollama, vLLM, LM Studio, etc.) */}
+      {/* 9. Cloudflare Workers AI & AI Gateway */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="h-7 w-7 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold text-xs">
+              CF
+            </div>
+            <div>
+              <h3 className="font-semibold text-sm text-neutral-100">Cloudflare Workers AI & Gateway</h3>
+              <p className="text-xs text-neutral-400">Serverless Whisper (@cf/openai/whisper) & Llama 3.3 at the edge</p>
+            </div>
+          </div>
+          <button
+            onClick={() => runTest('cloudflare')}
+            disabled={testingProvider === 'cloudflare' || !settings.cloudflare.accountId || !settings.cloudflare.apiToken}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+          >
+            {testingProvider === 'cloudflare' ? <Loader2 size={13} className="animate-spin" /> : null}
+            Test Connection
+          </button>
+        </div>
+
+        {testResults.cloudflare && (
+          <div
+            className={`p-2.5 rounded-lg text-xs flex items-center gap-2 ${
+              testResults.cloudflare.success
+                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+            }`}
+          >
+            {testResults.cloudflare.success ? <Check size={14} /> : <AlertCircle size={14} />}
+            <span>{testResults.cloudflare.message}</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <label className="block text-neutral-400 mb-1">Account ID</label>
+            <input
+              type="text"
+              placeholder="e.g. 1a2b3c4d5e6f7g8h9i0j..."
+              value={settings.cloudflare.accountId}
+              onChange={(e) =>
+                onUpdate({ cloudflare: { ...settings.cloudflare, accountId: e.target.value } })
+              }
+              className="w-full px-3 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-200 font-mono"
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-neutral-400">API Token</label>
+              <button
+                type="button"
+                onClick={() => toggleVisibility('cloudflare')}
+                className="text-neutral-500 hover:text-neutral-300"
+              >
+                {visibleKeys['cloudflare'] ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+            <input
+              type={visibleKeys['cloudflare'] ? 'text' : 'password'}
+              placeholder="Workers AI token"
+              value={settings.cloudflare.apiToken}
+              onChange={(e) =>
+                onUpdate({ cloudflare: { ...settings.cloudflare, apiToken: e.target.value } })
+              }
+              className="w-full px-3 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-200 font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-400 mb-1">STT Model (Whisper)</label>
+            <input
+              type="text"
+              placeholder="@cf/openai/whisper"
+              value={settings.cloudflare.sttModel}
+              onChange={(e) =>
+                onUpdate({ cloudflare: { ...settings.cloudflare, sttModel: e.target.value } })
+              }
+              className="w-full px-3 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-200 font-mono"
+            />
+          </div>
+
+          <div>
+            <label className="block text-neutral-400 mb-1">LLM Model</label>
+            <input
+              type="text"
+              placeholder="@cf/meta/llama-3.3-70b-instruct"
+              value={settings.cloudflare.llmModel}
+              onChange={(e) =>
+                onUpdate({ cloudflare: { ...settings.cloudflare, llmModel: e.target.value } })
+              }
+              className="w-full px-3 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-200 font-mono"
+            />
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-neutral-400 mb-1">Cloudflare AI Gateway URL (Optional)</label>
+            <input
+              type="text"
+              placeholder="https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}"
+              value={settings.cloudflare.gatewayUrl || ''}
+              onChange={(e) =>
+                onUpdate({ cloudflare: { ...settings.cloudflare, gatewayUrl: e.target.value } })
+              }
+              className="w-full px-3 py-2 rounded-lg bg-neutral-800/80 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-200 font-mono"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* 10. Custom OpenAI-Compatible Server (Ollama, vLLM, LM Studio, etc.) */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">

@@ -122,6 +122,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     apiKey: '',
     model: 'anthropic/claude-3.5-sonnet'
   },
+  cloudflare: {
+    accountId: '',
+    apiToken: '',
+    sttModel: '@cf/openai/whisper',
+    llmModel: '@cf/meta/llama-3.3-70b-instruct',
+    gatewayUrl: ''
+  },
   custom: {
     baseUrl: 'http://localhost:11434/v1',
     apiKey: '',
@@ -170,6 +177,7 @@ export class AppStore {
           anthropic: { ...DEFAULT_SETTINGS.anthropic, ...(parsed.anthropic || {}) },
           deepgram: { ...DEFAULT_SETTINGS.deepgram, ...(parsed.deepgram || {}) },
           openrouter: { ...DEFAULT_SETTINGS.openrouter, ...(parsed.openrouter || {}) },
+          cloudflare: { ...DEFAULT_SETTINGS.cloudflare, ...(parsed.cloudflare || {}) },
           custom: { ...DEFAULT_SETTINGS.custom, ...(parsed.custom || {}) },
           presets: parsed.presets && parsed.presets.length > 0 ? parsed.presets : BUILTIN_PRESETS
         };

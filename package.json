@@ -10,8 +10,9 @@
     "build": "npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
     "dev:electron": "electron .",
-    "package:mac": "npm run build && electron-builder --mac dir",
-    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
+    "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
+    "deploy:worker": "cd worker && npx wrangler deploy",
     "test:pipeline": "bun run tests/test-pipeline.ts"
   },
   "keywords": [

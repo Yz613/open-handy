@@ -15,6 +15,7 @@ export const PipelineConfig: React.FC<PipelineConfigProps> = ({ settings, onUpda
     { id: 'openai', name: 'OpenAI Whisper', desc: 'Official OpenAI whisper-1 model' },
     { id: 'gemini', name: 'Google Gemini Audio', desc: 'Gemini 2.0 Flash multimodal audio ingestion' },
     { id: 'deepgram', name: 'Deepgram Nova', desc: 'Nova-2 / Nova-3 dedicated speech model' },
+    { id: 'cloudflare', name: 'Cloudflare Workers AI', desc: 'Serverless Whisper on Cloudflare edge', badge: 'Serverless' },
     { id: 'custom', name: 'Custom / Local Server', desc: 'Local Whisper, vLLM, or self-hosted endpoint' },
   ];
 
@@ -27,6 +28,7 @@ export const PipelineConfig: React.FC<PipelineConfigProps> = ({ settings, onUpda
     { id: 'anthropic', name: 'Anthropic Claude', desc: 'Claude 3.5 Sonnet / Claude 3.5 Haiku' },
     { id: 'gemini', name: 'Google Gemini', desc: 'Gemini 2.0 Flash' },
     { id: 'openrouter', name: 'OpenRouter', desc: 'Any model via OpenRouter' },
+    { id: 'cloudflare', name: 'Cloudflare Workers AI', desc: 'Serverless Llama 3.3 on Cloudflare edge' },
     { id: 'custom', name: 'Custom / Local Server', desc: 'Local Ollama, LM Studio, or custom endpoint' },
   ];
 
