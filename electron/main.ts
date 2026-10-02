@@ -438,3 +438,12 @@ app.on('will-quit', () => {
 app.on('window-all-closed', () => {
   // Keep app running in menu bar
 });
+
+process.on('SIGTERM', () => {
+  app.quit();
+});
+
+process.on('SIGINT', () => {
+  app.quit();
+});
+
