@@ -20,6 +20,10 @@ export const electronAPI = {
   checkAccessibility: (): Promise<boolean> => ipcRenderer.invoke('check-accessibility'),
   openAccessibilitySettings: (): Promise<void> => ipcRenderer.invoke('open-accessibility-settings'),
 
+  // Developer & Project editing
+  openProjectFolder: (): Promise<void> => ipcRenderer.invoke('open-project-folder'),
+  openInEditor: (): Promise<void> => ipcRenderer.invoke('open-in-editor'),
+
   // Dictation flow
   sendAudioChunk: (arrayBuffer: ArrayBuffer, mimeType: string, durationSeconds: number): Promise<void> =>
     ipcRenderer.invoke('process-audio', arrayBuffer, mimeType, durationSeconds),

@@ -1,5 +1,6 @@
-import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, nativeImage, NativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, nativeImage, NativeImage, shell } from 'electron';
 import * as path from 'path';
+import { exec } from 'child_process';
 import { AppStore } from './store';
 import { TextInjector } from './injector';
 import { transcribeAudio } from './providers/stt';
@@ -10,6 +11,7 @@ import { HUDState, DictationRecord, AppSettings } from './providers/types';
 let tray: Tray | null = null;
 let hudWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
+let isQuitting = false;
 
 const store = new AppStore();
 const injector = new TextInjector();
@@ -17,6 +19,16 @@ const injector = new TextInjector();
 let isRecording = false;
 let recordingStartTime = 0;
 let recordingTimer: NodeJS.Timeout | null = null;
+
+// Ensure single instance lock so clicking the app in Applications focuses the existing instance
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    openSettingsWindow('general');
+  });
+}
 
 // Determine development vs production URLs
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -76,6 +88,20 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: '✏️ Edit Source Code...',
+      click: () => {
+        const projectDir = '/Users/yehudazahler/Projects/Personal/STT';
+        exec(`cursor "${projectDir}" || code "${projectDir}" || open "${projectDir}"`);
+      },
+    },
+    {
+      label: '📁 Open Project Folder...',
+      click: () => {
+        shell.openPath('/Users/yehudazahler/Projects/Personal/STT');
+      },
+    },
+    { type: 'separator' },
+    {
       label: 'Quit OpenHandy',
       accelerator: 'CommandOrControl+Q',
       click: () => app.quit(),
@@ -129,7 +155,12 @@ function createHUDWindow() {
 }
 
 function openSettingsWindow(initialTab: string = 'general') {
+  if (process.platform === 'darwin') {
+    app.dock?.show();
+  }
+
   if (settingsWindow) {
+    if (settingsWindow.isMinimized()) settingsWindow.restore();
     settingsWindow.show();
     settingsWindow.focus();
     settingsWindow.webContents.send('switch-tab', initialTab);
@@ -159,8 +190,19 @@ function openSettingsWindow(initialTab: string = 'general') {
 
   settingsWindow.once('ready-to-show', () => {
     settingsWindow?.show();
+    settingsWindow?.focus();
     if (initialTab !== 'general') {
       settingsWindow?.webContents.send('switch-tab', initialTab);
+    }
+  });
+
+  settingsWindow.on('close', (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      settingsWindow?.hide();
+      if (process.platform === 'darwin') {
+        app.dock?.hide();
+      }
     }
   });
 
@@ -279,6 +321,16 @@ function setupIPCHandlers() {
 
   ipcMain.handle('check-accessibility', () => injector.checkAccessibilityPermission());
   ipcMain.handle('open-accessibility-settings', () => injector.openAccessibilitySettings());
+
+  ipcMain.handle('open-project-folder', () => {
+    const projectDir = '/Users/yehudazahler/Projects/Personal/STT';
+    shell.openPath(projectDir);
+  });
+
+  ipcMain.handle('open-in-editor', () => {
+    const projectDir = '/Users/yehudazahler/Projects/Personal/STT';
+    exec(`cursor "${projectDir}" || code "${projectDir}" || open "${projectDir}"`);
+  });
 
   ipcMain.on('trigger-toggle-recording', () => {
     toggleRecording();
@@ -404,7 +456,8 @@ app.whenReady().then(() => {
 
   tray = new Tray(createTrayIcon());
   tray.setToolTip('OpenHandy — Universal Speech-to-Text & AI');
-  tray.on('click', () => toggleRecording());
+  tray.on('click', () => openSettingsWindow('general'));
+  tray.on('right-click', () => tray?.popUpContextMenu());
 
   updateTrayMenu();
   createHUDWindow();
@@ -431,6 +484,14 @@ app.whenReady().then(() => {
   }
 });
 
+app.on('activate', () => {
+  openSettingsWindow('general');
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
@@ -446,4 +507,5 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   app.quit();
 });
+
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Keyboard, Shield, Volume2, Clipboard, ArrowDownToLine, ExternalLink, Check, AlertTriangle } from 'lucide-react';
+import { Keyboard, Shield, Volume2, Clipboard, ArrowDownToLine, ExternalLink, Check, AlertTriangle, Code2, FolderOpen } from 'lucide-react';
 import { AppSettings } from '../../electron/providers/types';
 import { HotkeyRecorder } from './HotkeyRecorder';
 
@@ -178,6 +178,59 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUp
             If auto-paste does not paste into other apps, click "Open Settings", unlock the lock icon, and allow OpenHandy (or your terminal) under <strong>Privacy & Security → Accessibility</strong>.
           </p>
         )}
+      </div>
+
+      {/* 4. Project Source & Editing */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Code2 size={18} className="text-purple-400" />
+            <div>
+              <h3 className="font-semibold text-sm text-neutral-100">Project Source & Editing</h3>
+              <p className="text-xs text-neutral-400">
+                You can edit the full source code anytime. Changes can be tested live or rebuilt.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => window.electronAPI.openProjectFolder()}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-800 hover:bg-neutral-700 text-neutral-200 flex items-center gap-1.5 transition-colors"
+            >
+              <FolderOpen size={13} />
+              Open Folder
+            </button>
+            <button
+              onClick={() => window.electronAPI.openInEditor()}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1.5 transition-colors"
+            >
+              <Code2 size={13} />
+              Open in VS Code / Cursor
+            </button>
+          </div>
+        </div>
+
+        <div className="p-3 rounded-lg bg-neutral-950/60 border border-neutral-800/80 space-y-2 text-xs">
+          <div className="flex items-center justify-between text-neutral-400">
+            <span>Local Source Directory:</span>
+            <span className="font-mono text-neutral-300">/Users/yehudazahler/Projects/Personal/STT</span>
+          </div>
+          <div className="flex items-center justify-between text-neutral-400">
+            <span>GitHub Repository:</span>
+            <a
+              href="https://github.com/Yz613/open-handy"
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-400 hover:underline flex items-center gap-1"
+            >
+              github.com/Yz613/open-handy <ExternalLink size={11} />
+            </a>
+          </div>
+          <div className="pt-1 text-[11px] text-neutral-500 border-t border-neutral-800/60">
+            To edit live: run <code className="text-neutral-300 bg-neutral-800 px-1 py-0.5 rounded">npm start</code> in terminal.
+            To rebuild into /Applications: run <code className="text-neutral-300 bg-neutral-800 px-1 py-0.5 rounded">npm run package:mac</code>.
+          </div>
+        </div>
       </div>
     </div>
   );
