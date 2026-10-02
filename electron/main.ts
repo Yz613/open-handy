@@ -1,10 +1,14 @@
-import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, nativeImage, NativeImage, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, nativeImage, NativeImage, shell, systemPreferences, session } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as os from 'os';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { AppStore } from './store';
 import { TextInjector } from './injector';
-import { transcribeAudio } from './providers/stt';
+import { transcribeAudio, sttProviderConfigured, STTResult } from './providers/stt';
+
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 import { processWithLLM } from './providers/llm';
 import { testProviderConnection } from './providers/tester';
 import { HUDState, DictationRecord, AppSettings } from './providers/types';
@@ -21,6 +25,14 @@ const injector = new TextInjector();
 let isRecording = false;
 let recordingStartTime = 0;
 let recordingTimer: NodeJS.Timeout | null = null;
+let hudReady = false;
+let queuedHUDState: HUDState | null = null;
+let hudWantsRecording = false;
+let nativeListenerReady = false;
+let keylistenerFailures = 0;
+let pendingPaste: ((ok: boolean) => void) | null = null;
+let recordingToken = 0;
+let accessibilityWarned = false;
 
 // Ensure single instance lock so clicking the app in Applications focuses the existing instance
 const gotTheLock = app.requestSingleInstanceLock();
@@ -32,8 +44,6 @@ if (!gotTheLock) {
   });
 }
 
-// Determine development vs production URLs
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
 
 const TRAY_IDLE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAhUlEQVR4nO2VSQ7AIAwDY6v//zK9V1QkxBFCMFfCxCwCs8vpIDm/ZV0QNE45aYuhePWe8XQAKdTqboA4tMXw+ABP4VPrmsudjqBV1HIw3tu60VEgUk+L4VmZ/C/ATwPPpRzWwCH5NvbiclMtjNbC5mgqHyYD9IJMuWiLwU6XsATWaC8b8QJzLA8x5euh8wAAAABJRU5ErkJggg==';
@@ -113,47 +123,97 @@ function updateTrayMenu() {
   tray.setContextMenu(contextMenu);
 }
 
-function createHUDWindow() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
-
-  const hudWidth = 360;
-  const hudHeight = 84;
-  const x = Math.round((screenWidth - hudWidth) / 2);
-  const y = screenHeight - hudHeight - 40; // Hover nicely above dock
-
-  hudWindow = new BrowserWindow({
+function hudBounds() {
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const area = display.workArea;
+  const hudWidth = 440;
+  const hudHeight = 120;
+  return {
+    x: Math.round(area.x + (area.width - hudWidth) / 2),
+    y: Math.round(area.y + area.height - hudHeight - 16),
     width: hudWidth,
     height: hudHeight,
-    x,
-    y,
+  };
+}
+
+function positionHUD() {
+  if (!hudWindow) return;
+  hudWindow.setBounds(hudBounds());
+}
+
+function probeDevServer(page: string): Promise<boolean> {
+  if (app.isPackaged) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const req = http.get(`${VITE_DEV_SERVER_URL}/${page}`, (res) => {
+      res.resume();
+      resolve((res.statusCode || 500) < 500);
+    });
+    req.setTimeout(400, () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on('error', () => resolve(false));
+  });
+}
+
+async function loadRenderer(win: BrowserWindow, page: string) {
+  const distFile = path.join(__dirname, '../dist', page);
+  if (await probeDevServer(page)) {
+    await win.loadURL(`${VITE_DEV_SERVER_URL}/${page}`);
+    return;
+  }
+  if (fs.existsSync(distFile)) {
+    await win.loadFile(distFile);
+    return;
+  }
+  await win.loadURL(`${VITE_DEV_SERVER_URL}/${page}`);
+}
+
+function createHUDWindow() {
+  const bounds = hudBounds();
+
+  hudWindow = new BrowserWindow({
+    ...bounds,
     frame: false,
     transparent: true,
+    backgroundColor: '#00000000',
     alwaysOnTop: true,
-    focusable: false,      // CRUCIAL: Do not steal focus from the user's active typing cursor!
+    focusable: false,
     hasShadow: false,
     resizable: false,
+    movable: false,
     skipTaskbar: true,
     show: false,
+    type: 'panel',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
     },
   });
 
   hudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  hudWindow.setAlwaysOnTop(true, 'floating');
+  hudWindow.setAlwaysOnTop(true, 'screen-saver');
+  hudWindow.webContents.setBackgroundThrottling(false);
 
-  if (isDev) {
-    hudWindow.loadURL(`${VITE_DEV_SERVER_URL}/hud.html`);
-  } else {
-    hudWindow.loadFile(path.join(__dirname, '../dist/hud.html'));
-  }
+  hudWindow.webContents.on('did-finish-load', () => {
+    hudReady = true;
+    if (queuedHUDState) {
+      hudWindow?.webContents.send('hud-state-change', queuedHUDState);
+    }
+    if (hudWantsRecording) {
+      hudWindow?.webContents.send('start-recording');
+    }
+  });
 
   hudWindow.on('closed', () => {
     hudWindow = null;
+    hudReady = false;
   });
+
+  void loadRenderer(hudWindow, 'hud.html');
 }
 
 function openSettingsWindow(initialTab: string = 'general') {
@@ -184,11 +244,7 @@ function openSettingsWindow(initialTab: string = 'general') {
     },
   });
 
-  if (isDev) {
-    settingsWindow.loadURL(`${VITE_DEV_SERVER_URL}/index.html`);
-  } else {
-    settingsWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  void loadRenderer(settingsWindow, 'index.html');
 
   settingsWindow.once('ready-to-show', () => {
     settingsWindow?.show();
@@ -223,12 +279,16 @@ function isModifierHotkey(hotkey: string): boolean {
   return MODIFIER_HOTKEYS.some(m => m.toLowerCase() === hotkey.toLowerCase().trim());
 }
 
-function getKeylistenerPath(): string {
-  const prodPath = path.join(process.resourcesPath, 'bin', 'keylistener');
+function getHelperPath(name: string): string {
+  const prodPath = path.join(process.resourcesPath, 'bin', name);
   if (fs.existsSync(prodPath)) return prodPath;
-  const devPath = path.join(__dirname, '../bin', 'keylistener');
+  const devPath = path.join(__dirname, '../bin', name);
   if (fs.existsSync(devPath)) return devPath;
-  return path.join(__dirname, '../../bin', 'keylistener');
+  return path.join(__dirname, '../../bin', name);
+}
+
+function getKeylistenerPath(): string {
+  return getHelperPath('keylistener');
 }
 
 function updateNativeKeyListener(key: string, mode: string) {
@@ -238,6 +298,7 @@ function updateNativeKeyListener(key: string, mode: string) {
 }
 
 function initNativeKeyListener() {
+  if (keylistenerProcess) return;
   const exePath = getKeylistenerPath();
   if (!fs.existsSync(exePath)) {
     console.warn('Native keylistener binary not found at:', exePath);
@@ -260,22 +321,85 @@ function initNativeKeyListener() {
       }
     });
 
-    keylistenerProcess.on('exit', () => {
+    keylistenerProcess.on('exit', (code) => {
       keylistenerProcess = null;
+      nativeListenerReady = false;
+      if (pendingPaste) {
+        pendingPaste(false);
+        pendingPaste = null;
+      }
+      if (isQuitting) return;
+      keylistenerFailures += code === 0 ? 0 : 1;
+      if (keylistenerFailures <= 6) {
+        setTimeout(() => initNativeKeyListener(), 800);
+      }
     });
   } catch (err) {
     console.error('Failed to start native keylistener:', err);
   }
 }
 
+function requestNativePaste(appName: string | null): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!keylistenerProcess?.stdin?.writable || !nativeListenerReady) {
+      resolve(false);
+      return;
+    }
+    if (pendingPaste) pendingPaste(false);
+    const timer = setTimeout(() => {
+      if (pendingPaste) {
+        pendingPaste = null;
+        resolve(false);
+      }
+    }, 1600);
+    pendingPaste = (ok: boolean) => {
+      clearTimeout(timer);
+      pendingPaste = null;
+      resolve(ok);
+    };
+    keylistenerProcess.stdin.write(JSON.stringify({ cmd: 'paste', app: appName || '' }) + '\n');
+  });
+}
+
 function handleKeyListenerMessage(msg: any) {
+  if (msg.event === 'ready') {
+    nativeListenerReady = true;
+    keylistenerFailures = 0;
+    globalShortcut.unregisterAll();
+    return;
+  }
+
+  if (msg.event === 'error') {
+    console.error('Key listener:', msg.message);
+    if (!accessibilityWarned) {
+      accessibilityWarned = true;
+      try { systemPreferences.isTrustedAccessibilityClient(true); } catch (_) {}
+      setHUDState({
+        status: 'error',
+        message: msg.message || 'Enable Accessibility for OpenHandy, then try again.',
+      });
+      setTimeout(() => setHUDState({ status: 'idle' }), 4200);
+    }
+    return;
+  }
+
+  if (msg.event === 'paste_done') {
+    pendingPaste?.(Boolean(msg.ok));
+    pendingPaste = null;
+    return;
+  }
+
   if (msg.event === 'trigger') {
+    const appName = typeof msg.app === 'string' ? msg.app : '';
     if (msg.action === 'toggle') {
+      if (!isRecording && appName) injector.setFrontmostApp(appName);
       toggleRecording();
     } else if (msg.action === 'start') {
-      startRecording();
+      startRecording(appName);
     } else if (msg.action === 'stop') {
       stopRecording();
+    } else if (msg.action === 'cancel') {
+      cancelRecording();
     }
   } else if (msg.event === 'recorded_key') {
     settingsWindow?.webContents.send('native-key-recorded', msg);
@@ -296,6 +420,13 @@ function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?
     globalShortcut.unregisterAll();
     updateNativeKeyListener(hotkeyToTest, settings.hotkeyMode);
     console.log(`Native modifier hotkey activated: ${hotkeyToTest}`);
+    return { success: true };
+  }
+
+  // The native listener owns both modifier keys and chords, including hold-to-talk.
+  // globalShortcut cannot see key-up, so it is only a fallback when the helper is down.
+  if (nativeListenerReady && keylistenerProcess) {
+    updateNativeKeyListener(hotkeyToTest, settings.hotkeyMode);
     return { success: true };
   }
 
@@ -350,35 +481,45 @@ function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?
 }
 
 function setHUDState(state: HUDState) {
-  if (!hudWindow) return;
+  queuedHUDState = state;
+  if (!hudWindow || hudWindow.isDestroyed()) return;
 
   if (state.status === 'idle') {
     hudWindow.hide();
   } else {
-    if (!hudWindow.isVisible()) {
-      hudWindow.showInactive(); // Show without taking focus
-    }
+    positionHUD();
+    hudWindow.setAlwaysOnTop(true, 'screen-saver');
+    hudWindow.showInactive();
   }
 
-  hudWindow.webContents.send('hud-state-change', state);
+  if (hudReady && !hudWindow.webContents.isLoading()) {
+    hudWindow.webContents.send('hud-state-change', state);
+  }
 }
 
-async function startRecording() {
+function notifyHUD(channel: 'start-recording' | 'stop-recording' | 'cancel-recording') {
+  if (channel === 'start-recording') hudWantsRecording = true;
+  if (channel === 'stop-recording' || channel === 'cancel-recording') hudWantsRecording = false;
+  if (hudWindow && hudReady && !hudWindow.webContents.isLoading()) {
+    hudWindow.webContents.send(channel);
+  }
+}
+
+function startRecording(fromApp?: string) {
   if (isRecording) return;
   isRecording = true;
+  recordingToken += 1;
 
-  // 1. Capture the frontmost application before recording starts
-  await injector.captureFrontmostApp();
-
-  // 2. Notify renderer HUD to begin Web Audio recording
-  if (hudWindow) {
-    hudWindow.webContents.send('start-recording');
+  if (fromApp && fromApp.trim()) {
+    injector.setFrontmostApp(fromApp);
+  } else {
+    void injector.captureFrontmostApp();
   }
 
   recordingStartTime = Date.now();
   setHUDState({ status: 'listening', elapsedSeconds: 0 });
+  notifyHUD('start-recording');
 
-  // Start elapsed timer ticker for HUD
   if (recordingTimer) clearInterval(recordingTimer);
   recordingTimer = setInterval(() => {
     if (!isRecording) return;
@@ -392,17 +533,38 @@ async function startRecording() {
 function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
+  const token = recordingToken;
 
   if (recordingTimer) {
     clearInterval(recordingTimer);
     recordingTimer = null;
   }
 
-  // Request audio blob from HUD window
-  if (hudWindow) {
-    hudWindow.webContents.send('stop-recording');
+  notifyHUD('stop-recording');
+  setHUDState({ status: 'transcribing', providerName: 'audio' });
+  updateTrayMenu();
+
+  setTimeout(() => {
+    if (recordingToken !== token || isRecording) return;
+    if (queuedHUDState?.status === 'transcribing' && queuedHUDState.providerName === 'audio') {
+      setHUDState({ status: 'error', message: 'No audio was captured. Allow microphone access and try again.' });
+      setTimeout(() => setHUDState({ status: 'idle' }), 3200);
+    }
+  }, 5000);
+}
+
+function cancelRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  recordingToken += 1;
+
+  if (recordingTimer) {
+    clearInterval(recordingTimer);
+    recordingTimer = null;
   }
 
+  notifyHUD('cancel-recording');
+  setHUDState({ status: 'idle' });
   updateTrayMenu();
 }
 
@@ -414,17 +576,57 @@ function toggleRecording() {
   }
 }
 
+function transcribeLocally(audioBuffer: Buffer): Promise<STTResult> {
+  const exe = getHelperPath('localstt');
+  if (!fs.existsSync(exe)) {
+    return Promise.reject(new Error('Add an API key in Settings. On-device transcription is unavailable.'));
+  }
+
+  const tmp = path.join(os.tmpdir(), `openhandy-${Date.now()}.wav`);
+  fs.writeFileSync(tmp, audioBuffer);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, [tmp], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const cleanup = () => fs.unlink(tmp, () => {});
+
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+    child.on('close', () => {
+      cleanup();
+      const line = stdout.trim().split('\n').filter(Boolean).pop() || '';
+      try {
+        const parsed = JSON.parse(line) as { text?: string; error?: string };
+        if (parsed.error) {
+          reject(new Error(parsed.error));
+          return;
+        }
+        resolve({
+          text: parsed.text || '',
+          provider: 'custom',
+          model: 'macOS Speech',
+        });
+      } catch {
+        reject(new Error(stderr.trim() || 'On-device transcription failed.'));
+      }
+    });
+  });
+}
+
 // IPC Handlers
 function setupIPCHandlers() {
   ipcMain.handle('get-settings', () => store.getSettings());
 
   ipcMain.handle('update-settings', (_event, partial) => {
-    if (partial.hotkey) {
-      registerGlobalHotkey(partial.hotkey);
-    } else if (partial.hotkeyMode) {
-      updateNativeKeyListener(store.getSettings().hotkey, partial.hotkeyMode);
-    }
     const updated = store.updateSettings(partial);
+    if (partial.hotkey || partial.hotkeyMode) {
+      registerGlobalHotkey(updated.hotkey);
+    }
     updateTrayMenu();
     return updated;
   });
@@ -485,6 +687,20 @@ function setupIPCHandlers() {
     toggleRecording();
   });
 
+  ipcMain.on('recording-error', (_event, message: string) => {
+    isRecording = false;
+    hudWantsRecording = false;
+    recordingToken += 1;
+    if (recordingTimer) {
+      clearInterval(recordingTimer);
+      recordingTimer = null;
+    }
+    const text = (message || 'Recording failed').slice(0, 140);
+    setHUDState({ status: 'error', message: text });
+    setTimeout(() => setHUDState({ status: 'idle' }), 3200);
+    updateTrayMenu();
+  });
+
   // Audio level streaming from renderer to HUD visualizer
   ipcMain.on('audio-level', (_event, level) => {
     if (hudWindow && isRecording) {
@@ -505,8 +721,14 @@ function setupIPCHandlers() {
 
     try {
       // 1. Transcription stage
-      setHUDState({ status: 'transcribing', providerName: settings.activeSttProvider.toUpperCase() });
-      const sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
+      let sttResult: STTResult;
+      if (!sttProviderConfigured(settings)) {
+        setHUDState({ status: 'transcribing', providerName: 'this Mac' });
+        sttResult = await transcribeLocally(audioBuffer);
+      } else {
+        setHUDState({ status: 'transcribing', providerName: settings.activeSttProvider.toUpperCase() });
+        sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
+      }
       const rawTranscript = sttResult.text.trim();
 
       if (!rawTranscript) {
@@ -607,6 +829,22 @@ app.whenReady().then(() => {
   tray.setToolTip('OpenHandy — Universal Speech-to-Text & AI');
   tray.on('click', () => openSettingsWindow('general'));
   tray.on('right-click', () => tray?.popUpContextMenu());
+
+  injector.setNativePaste((appName) => requestNativePaste(appName));
+
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media');
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    return permission === 'media';
+  });
+
+  if (process.platform === 'darwin') {
+    systemPreferences.askForMediaAccess('microphone').catch(() => {});
+    if (!systemPreferences.isTrustedAccessibilityClient(false)) {
+      systemPreferences.isTrustedAccessibilityClient(true);
+    }
+  }
 
   updateTrayMenu();
   createHUDWindow();

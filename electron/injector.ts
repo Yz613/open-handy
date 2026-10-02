@@ -6,6 +6,15 @@ const execAsync = promisify(exec);
 
 export class TextInjector {
   private lastActiveApp: string | null = null;
+  private nativePaste: ((appName: string | null) => Promise<boolean>) | null = null;
+
+  public setNativePaste(fn: (appName: string | null) => Promise<boolean>) {
+    this.nativePaste = fn;
+  }
+
+  public setFrontmostApp(name: string | null) {
+    if (name && name.trim()) this.lastActiveApp = name.trim();
+  }
 
   /**
    * Captures the name of the currently focused macOS application
@@ -36,12 +45,24 @@ export class TextInjector {
       clipboard.writeText(text);
 
       if (options.autoPaste) {
+        if (this.nativePaste) {
+          const pasted = await this.nativePaste(this.lastActiveApp);
+          if (pasted) {
+            if (!options.copyToClipboard && previousClipboard !== null) {
+              setTimeout(() => {
+                try { clipboard.writeText(previousClipboard); } catch { /* ignore */ }
+              }, 350);
+            }
+            return true;
+          }
+        }
+
         // 2. Reactivate the previously active app if known
         if (this.lastActiveApp && this.lastActiveApp !== 'OpenHandy' && this.lastActiveApp !== 'Electron') {
           try {
-            await execAsync(`osascript -e 'tell application "${this.lastActiveApp}" to activate'`);
-            // Brief delay to allow app to regain focus
-            await new Promise(res => setTimeout(res, 50));
+            const escaped = this.lastActiveApp.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            await execAsync(`osascript -e 'tell application "${escaped}" to activate'`);
+            await new Promise(res => setTimeout(res, 180));
           } catch (appErr) {
             console.warn(`Could not activate app ${this.lastActiveApp}`, appErr);
           }

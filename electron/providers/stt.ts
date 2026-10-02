@@ -6,6 +6,29 @@ export interface STTResult {
   model: string;
 }
 
+export function sttProviderConfigured(settings: AppSettings): boolean {
+  switch (settings.activeSttProvider) {
+    case 'azure':
+      return Boolean(settings.azure.endpoint && settings.azure.apiKey);
+    case 'vercel':
+      return Boolean(settings.vercel.apiKey);
+    case 'groq':
+      return Boolean(settings.groq.apiKey);
+    case 'openai':
+      return Boolean(settings.openai.apiKey);
+    case 'gemini':
+      return Boolean(settings.gemini.apiKey);
+    case 'deepgram':
+      return Boolean(settings.deepgram.apiKey);
+    case 'cloudflare':
+      return Boolean(settings.cloudflare.accountId && settings.cloudflare.apiToken);
+    case 'custom':
+      return Boolean(settings.custom.baseUrl);
+    default:
+      return false;
+  }
+}
+
 export async function transcribeAudio(
   audioBuffer: Buffer,
   mimeType: string,

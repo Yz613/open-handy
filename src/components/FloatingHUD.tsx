@@ -21,6 +21,7 @@ export const FloatingHUD: React.FC = () => {
   const [hudState, setHudState] = useState<HUDState>({ status: 'idle' });
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const recorderRef = useRef<AudioRecorder | null>(null);
+  const opRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     if (!window.electronAPI) return;
@@ -31,27 +32,48 @@ export const FloatingHUD: React.FC = () => {
       window.electronAPI.sendAudioLevel(level);
     });
 
+    const enqueue = (job: () => Promise<void>) => {
+      opRef.current = opRef.current.then(job).catch((err) => {
+        console.error('Recording pipeline error:', err);
+      });
+    };
+
     // Start recording event from global hotkey or tray
-    const unsubStart = window.electronAPI.onStartRecording(async () => {
-      try {
-        playStartChime();
-        await recorderRef.current?.start();
-      } catch (err) {
-        console.error('Failed to start recording:', err);
-      }
+    const unsubStart = window.electronAPI.onStartRecording(() => {
+      enqueue(async () => {
+        try {
+          playStartChime();
+          await recorderRef.current?.start();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Microphone unavailable';
+          window.electronAPI.reportRecordingError(message);
+        }
+      });
     });
 
     // Stop recording event
-    const unsubStop = window.electronAPI.onStopRecording(async () => {
-      try {
-        playStopChime();
-        if (recorderRef.current) {
-          const { arrayBuffer, mimeType, durationSeconds } = await recorderRef.current.stop();
-          await window.electronAPI.sendAudioChunk(arrayBuffer, mimeType, durationSeconds);
+    const unsubStop = window.electronAPI.onStopRecording(() => {
+      enqueue(async () => {
+        const recorder = recorderRef.current;
+        if (!recorder?.isActive()) {
+          window.electronAPI.reportRecordingError('No audio was captured.');
+          return;
         }
-      } catch (err) {
-        console.error('Failed to stop recording:', err);
-      }
+        try {
+          playStopChime();
+          const { arrayBuffer, mimeType, durationSeconds } = await recorder.stop();
+          await window.electronAPI.sendAudioChunk(arrayBuffer, mimeType, durationSeconds);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Could not finish the recording.';
+          window.electronAPI.reportRecordingError(message);
+        }
+      });
+    });
+
+    const unsubCancel = window.electronAPI.onCancelRecording(() => {
+      enqueue(async () => {
+        recorderRef.current?.discard();
+      });
     });
 
     // State changes from main process
@@ -72,6 +94,7 @@ export const FloatingHUD: React.FC = () => {
     return () => {
       unsubStart();
       unsubStop();
+      unsubCancel();
       unsubHUD();
       unsubLevel();
     };
@@ -145,7 +168,13 @@ export const FloatingHUD: React.FC = () => {
           <div className="flex items-center gap-2.5 py-0.5">
             <Loader2 size={16} className="animate-spin text-blue-400" />
             <span className="text-xs font-medium text-neutral-200">
-              Transcribing with <span className="text-blue-300 font-semibold">{hudState.providerName}</span>...
+              {hudState.providerName === 'audio' ? (
+                'Finishing recording...'
+              ) : (
+                <>
+                  Transcribing with <span className="text-blue-300 font-semibold">{hudState.providerName}</span>...
+                </>
+              )}
             </span>
           </div>
         )}

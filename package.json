@@ -5,7 +5,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build:native": "mkdir -p bin && swiftc -O native/keylistener.swift -o bin/keylistener",
+    "build:native": "mkdir -p bin && swiftc -O native/keylistener.swift -o bin/keylistener && swiftc -O native/localstt.swift -framework Speech -o bin/localstt",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:native && npm run build:renderer && npm run build:electron",
@@ -62,6 +62,10 @@
         "dir"
       ],
       "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "OpenHandy needs the microphone to record dictation.",
+        "NSSpeechRecognitionUsageDescription": "OpenHandy transcribes speech on this Mac when a cloud provider is not configured."
+      },
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
       "entitlementsInherit": "entitlements.mac.plist"

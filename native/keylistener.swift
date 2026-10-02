@@ -1,11 +1,11 @@
 import Cocoa
 import Foundation
 
-// Structure for JSON messages to/from Electron
 struct StdinMessage: Codable {
     let cmd: String?
     let key: String?
     let mode: String?
+    let app: String?
 }
 
 let MODIFIER_NAMES: [Int64: (id: String, display: String)] = [
@@ -21,33 +21,48 @@ let MODIFIER_NAMES: [Int64: (id: String, display: String)] = [
     57: ("CapsLock", "Caps Lock")
 ]
 
+struct HotkeySpec {
+    var singleModifier: Int64? = nil
+    var keyCode: Int64? = nil
+    var control = false
+    var option = false
+    var command = false
+    var shift = false
+    var fn = false
+}
+
+var eventTapPort: CFMachPort?
+
 class KeyListenerService {
     static let shared = KeyListenerService()
 
     var targetKey: String = "LeftControl"
-    var targetKeyCode: Int64 = 59
-    var mode: String = "toggle" // "toggle" | "pushToTalk" | "doubleTap"
+    var spec = HotkeySpec(singleModifier: 59)
+    var mode: String = "toggle" // "toggle" | "pushToTalk"
     var isRecordingActive: Bool = false
 
     var isKeyDown: Bool = false
     var keyDownTime: TimeInterval = 0
     var otherKeyPressed: Bool = false
-    var lastTapTime: TimeInterval = 0
+    var previousFlags: CGEventFlags = []
+
+    // Dictation session started from this physical press (or a latched toggle).
+    var dictationActive = false
+    var latched = false
+    var endOnRelease = false
+    var armWork: DispatchWorkItem?
 
     func setHotkey(key: String, mode: String) {
         self.targetKey = key
         self.mode = mode
-
-        // Determine target keycode if it's a modifier key
-        var foundCode: Int64 = -1
-        for (code, info) in MODIFIER_NAMES {
-            if info.id.lowercased() == key.lowercased() || key.lowercased().contains(info.id.lowercased()) {
-                foundCode = code
-                break
-            }
-        }
-        self.targetKeyCode = foundCode
-        sendJSON(["event": "hotkey_updated", "key": self.targetKey, "targetKeyCode": self.targetKeyCode, "mode": self.mode])
+        self.spec = parseHotkey(key)
+        let code = self.spec.singleModifier ?? self.spec.keyCode ?? -1
+        sendJSON([
+            "event": "hotkey_updated",
+            "key": self.targetKey,
+            "targetKeyCode": code,
+            "mode": self.mode
+        ])
     }
 
     func sendJSON(_ dict: [String: Any]) {
@@ -58,118 +73,298 @@ class KeyListenerService {
         }
     }
 
+    func frontmostAppName() -> String {
+        return NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+    }
+
+    func trigger(_ action: String) {
+        sendJSON([
+            "event": "trigger",
+            "action": action,
+            "app": frontmostAppName()
+        ])
+    }
+
+    func beginDictation() {
+        if dictationActive { return }
+        dictationActive = true
+        latched = false
+        endOnRelease = false
+        trigger("start")
+    }
+
+    func endDictation(action: String) {
+        armWork?.cancel()
+        armWork = nil
+        if dictationActive {
+            dictationActive = false
+            latched = false
+            endOnRelease = false
+            trigger(action)
+        }
+    }
+
+    func scheduleArm() {
+        armWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            if self.isKeyDown && !self.otherKeyPressed && !self.dictationActive {
+                self.beginDictation()
+            }
+        }
+        armWork = work
+        // Short delay so Control/Command chords (Ctrl+C) don't flash the recorder,
+        // while a real hold still shows the indicator almost immediately.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    }
+
+    func handlePressBegan() {
+        isKeyDown = true
+        keyDownTime = Date().timeIntervalSince1970
+        otherKeyPressed = false
+        if dictationActive && latched {
+            // Second tap of a latched toggle session: stop when the key comes up.
+            endOnRelease = true
+            return
+        }
+        endOnRelease = false
+        if mode == "pushToTalk" {
+            beginDictation()
+        } else {
+            scheduleArm()
+        }
+    }
+
+    func handlePressEnded() {
+        armWork?.cancel()
+        armWork = nil
+        let duration = Date().timeIntervalSince1970 - keyDownTime
+        isKeyDown = false
+
+        if otherKeyPressed {
+            if endOnRelease {
+                endDictation(action: "stop")
+            } else if dictationActive && !latched {
+                endDictation(action: "cancel")
+            }
+            endOnRelease = false
+            return
+        }
+
+        if endOnRelease {
+            endDictation(action: "stop")
+            return
+        }
+
+        if !dictationActive {
+            // Released before the arm delay. A quick tap in toggle mode still starts.
+            if mode != "pushToTalk" && duration < 0.45 {
+                beginDictation()
+                latched = true
+            }
+            return
+        }
+
+        if mode == "pushToTalk" || duration >= 0.18 {
+            endDictation(action: "stop")
+        } else {
+            // Short tap in toggle mode: leave the recorder running.
+            latched = true
+        }
+    }
+
+    func noteOtherKey() {
+        otherKeyPressed = true
+        armWork?.cancel()
+        armWork = nil
+        if dictationActive && !latched {
+            endDictation(action: "cancel")
+        }
+    }
+
     func handleEvent(type: CGEventType, event: CGEvent) {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = eventTapPort {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+            return
+        }
+
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
 
-        // 1. If currently in Settings recording mode, report any key pressed
         if isRecordingActive {
-            if type == .flagsChanged {
-                if let modInfo = MODIFIER_NAMES[keyCode] {
-                    // Check if modifier was pressed down (not released)
-                    var isDown = false
-                    if keyCode == 59 || keyCode == 62 { isDown = flags.contains(.maskControl) }
-                    else if keyCode == 58 || keyCode == 61 { isDown = flags.contains(.maskAlternate) }
-                    else if keyCode == 55 || keyCode == 54 { isDown = flags.contains(.maskCommand) }
-                    else if keyCode == 56 || keyCode == 60 { isDown = flags.contains(.maskShift) }
-                    else if keyCode == 63 { isDown = flags.contains(.maskSecondaryFn) }
-
-                    if isDown {
-                        sendJSON([
-                            "event": "recorded_key",
-                            "key": modInfo.id,
-                            "display": modInfo.display,
-                            "isModifier": true
-                        ])
-                        return
-                    }
-                }
-            } else if type == .keyDown {
-                // Regular key combination pressed
-                var mods: [String] = []
-                if flags.contains(.maskControl) { mods.pushOrKeep("Control") }
-                if flags.contains(.maskAlternate) { mods.pushOrKeep("Alt") }
-                if flags.contains(.maskCommand) { mods.pushOrKeep("CommandOrControl") }
-                if flags.contains(.maskShift) { mods.pushOrKeep("Shift") }
-
-                let keyName = getNormalKeyName(keyCode: keyCode)
-                if !keyName.isEmpty {
-                    let isFKey = keyName.hasPrefix("F")
-                    if mods.isEmpty && !isFKey {
-                        // User pressed regular key without modifier
-                        sendJSON(["event": "record_error", "message": "Global hotkey requires a modifier (⌥, ⌃, ⌘) or an F-key."])
-                        return
-                    }
-                    let acc = (mods + [keyName]).joined(separator: "+")
-                    sendJSON([
-                        "event": "recorded_key",
-                        "key": acc,
-                        "display": acc.replacingOccurrences(of: "CommandOrControl", with: "⌘ ")
-                                      .replacingOccurrences(of: "Alt", with: "⌥ ")
-                                      .replacingOccurrences(of: "Control", with: "⌃ ")
-                                      .replacingOccurrences(of: "Shift", with: "⇧ ")
-                                      .replacingOccurrences(of: "+", with: ""),
-                        "isModifier": false
-                    ])
-                    return
-                }
+            if handleRecordingCapture(type: type, event: event, keyCode: keyCode, flags: flags) {
+                previousFlags = flags
+                return
             }
         }
 
-        // 2. Normal execution mode: Check target hotkey
-        if targetKeyCode > 0 {
-            // Target is a single modifier key like LeftControl (59)
-            if type == .keyDown {
-                if keyCode != targetKeyCode {
-                    otherKeyPressed = true
-                }
-            } else if type == .flagsChanged {
-                if keyCode == targetKeyCode {
-                    var isNowDown = false
-                    if targetKeyCode == 59 || targetKeyCode == 62 { isNowDown = flags.contains(.maskControl) }
-                    else if targetKeyCode == 58 || targetKeyCode == 61 { isNowDown = flags.contains(.maskAlternate) }
-                    else if targetKeyCode == 55 || targetKeyCode == 54 { isNowDown = flags.contains(.maskCommand) }
-                    else if targetKeyCode == 56 || targetKeyCode == 60 { isNowDown = flags.contains(.maskShift) }
-                    else if targetKeyCode == 63 { isNowDown = flags.contains(.maskSecondaryFn) }
+        if let single = spec.singleModifier {
+            handleSingleModifier(type: type, event: event, keyCode: keyCode, flags: flags, target: single)
+        } else if let watched = spec.keyCode {
+            handleChord(type: type, event: event, keyCode: keyCode, flags: flags, watched: watched)
+        }
 
-                    if isNowDown && !isKeyDown {
-                        // Key Down
-                        isKeyDown = true
-                        keyDownTime = Date().timeIntervalSince1970
-                        otherKeyPressed = false
+        previousFlags = flags
+    }
 
-                        if mode == "pushToTalk" {
-                            sendJSON(["event": "trigger", "action": "start"])
-                        }
-                    } else if !isNowDown && isKeyDown {
-                        // Key Up
-                        isKeyDown = false
-                        let duration = Date().timeIntervalSince1970 - keyDownTime
+    func handleSingleModifier(type: CGEventType, event: CGEvent, keyCode: Int64, flags: CGEventFlags, target: Int64) {
+        if type == .keyDown {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 1 { return }
+            if keyCode != target && keyCode != 0 {
+                noteOtherKey()
+            }
+            return
+        }
 
-                        if mode == "pushToTalk" {
-                            sendJSON(["event": "trigger", "action": "stop"])
-                        } else if mode == "doubleTap" {
-                            if !otherKeyPressed && duration < 0.4 {
-                                let now = Date().timeIntervalSince1970
-                                if now - lastTapTime < 0.4 {
-                                    lastTapTime = 0
-                                    sendJSON(["event": "trigger", "action": "toggle"])
-                                } else {
-                                    lastTapTime = now
-                                }
-                            }
-                        } else {
-                            // Single tap to toggle: only trigger if no other key was pressed during the tap
-                            if !otherKeyPressed && duration < 0.7 {
-                                sendJSON(["event": "trigger", "action": "toggle"])
-                            }
-                        }
-                    }
+        if type != .flagsChanged { return }
+
+        let matchesTarget = keyCode == target || (keyCode == 0 && modifierFlagChanged(target, flags: flags))
+        if !matchesTarget {
+            if modifierFlagChanged(keyCode == 0 ? target : keyCode, flags: flags) && keyCode != target {
+                noteOtherKey()
+            }
+            return
+        }
+
+        let isNowDown = isModifierPhysicallyDown(target, flags: flags)
+        if isNowDown && !isKeyDown {
+            handlePressBegan()
+        } else if !isNowDown && isKeyDown {
+            handlePressEnded()
+        }
+    }
+
+    func handleChord(type: CGEventType, event: CGEvent, keyCode: Int64, flags: CGEventFlags, watched: Int64) {
+        if type == .keyDown {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 1 { return }
+            if keyCode == watched && modifiersMatch(flags) && !isKeyDown {
+                isKeyDown = true
+                keyDownTime = Date().timeIntervalSince1970
+                otherKeyPressed = false
+                if mode == "pushToTalk" {
+                    beginDictation()
+                } else if dictationActive {
+                    endDictation(action: "stop")
                 } else {
-                    otherKeyPressed = true
+                    beginDictation()
+                    latched = true
                 }
             }
+            return
         }
+
+        if type == .keyUp && keyCode == watched && isKeyDown {
+            isKeyDown = false
+            if mode == "pushToTalk" {
+                endDictation(action: "stop")
+            }
+        }
+    }
+
+    func modifierFlag(for keyCode: Int64) -> CGEventFlags? {
+        switch keyCode {
+        case 59, 62: return .maskControl
+        case 58, 61: return .maskAlternate
+        case 55, 54: return .maskCommand
+        case 56, 60: return .maskShift
+        case 63: return .maskSecondaryFn
+        default: return nil
+        }
+    }
+
+    func isModifierPhysicallyDown(_ keyCode: Int64, flags: CGEventFlags) -> Bool {
+        guard let flag = modifierFlag(for: keyCode) else { return false }
+        return flags.contains(flag)
+    }
+
+    func modifierFlagChanged(_ keyCode: Int64, flags: CGEventFlags) -> Bool {
+        guard let flag = modifierFlag(for: keyCode) else { return false }
+        return flags.contains(flag) != previousFlags.contains(flag)
+    }
+
+    func modifiersMatch(_ flags: CGEventFlags) -> Bool {
+        if spec.control != flags.contains(.maskControl) { return false }
+        if spec.option != flags.contains(.maskAlternate) { return false }
+        if spec.command != flags.contains(.maskCommand) { return false }
+        if spec.shift != flags.contains(.maskShift) { return false }
+        if spec.fn != flags.contains(.maskSecondaryFn) { return false }
+        return true
+    }
+
+    func handleRecordingCapture(type: CGEventType, event: CGEvent, keyCode: Int64, flags: CGEventFlags) -> Bool {
+        if type == .flagsChanged {
+            if let modInfo = MODIFIER_NAMES[keyCode], isModifierPhysicallyDown(keyCode, flags: flags) {
+                sendJSON([
+                    "event": "recorded_key",
+                    "key": modInfo.id,
+                    "display": modInfo.display,
+                    "isModifier": true
+                ])
+                return true
+            }
+        } else if type == .keyDown {
+            if event.getIntegerValueField(.keyboardEventAutorepeat) == 1 { return true }
+            var mods: [String] = []
+            if flags.contains(.maskControl) { mods.pushOrKeep("Control") }
+            if flags.contains(.maskAlternate) { mods.pushOrKeep("Alt") }
+            if flags.contains(.maskCommand) { mods.pushOrKeep("CommandOrControl") }
+            if flags.contains(.maskShift) { mods.pushOrKeep("Shift") }
+
+            let keyName = getNormalKeyName(keyCode: keyCode)
+            if !keyName.isEmpty {
+                let isFKey = keyName.hasPrefix("F") && keyName.dropFirst().allSatisfy({ $0.isNumber })
+                if mods.isEmpty && !isFKey {
+                    sendJSON(["event": "record_error", "message": "Global hotkey requires a modifier (⌥, ⌃, ⌘) or an F-key."])
+                    return true
+                }
+                let acc = (mods + [keyName]).joined(separator: "+")
+                sendJSON([
+                    "event": "recorded_key",
+                    "key": acc,
+                    "display": acc.replacingOccurrences(of: "CommandOrControl", with: "⌘ ")
+                                  .replacingOccurrences(of: "Alt", with: "⌥ ")
+                                  .replacingOccurrences(of: "Control", with: "⌃ ")
+                                  .replacingOccurrences(of: "Shift", with: "⇧ ")
+                                  .replacingOccurrences(of: "+", with: ""),
+                    "isModifier": false
+                ])
+                return true
+            }
+        }
+        return false
+    }
+
+    func postPaste(into appName: String) {
+        DispatchQueue.main.async {
+            if !appName.isEmpty,
+               let target = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == appName }) {
+                if #available(macOS 14.0, *) {
+                    _ = target.activate(from: NSRunningApplication.current, options: [.activateAllWindows])
+                } else {
+                    _ = target.activate(options: [.activateIgnoringOtherApps])
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                let ok = self.postCommandV()
+                self.sendJSON(["event": "paste_done", "ok": ok])
+            }
+        }
+    }
+
+    func postCommandV() -> Bool {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) else {
+            return false
+        }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        usleep(40_000)
+        up.post(tap: .cghidEventTap)
+        return true
     }
 
     func getNormalKeyName(keyCode: Int64) -> String {
@@ -232,6 +427,113 @@ class KeyListenerService {
     }
 }
 
+func parseHotkey(_ raw: String) -> HotkeySpec {
+    var spec = HotkeySpec()
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return spec }
+
+    if let code = exactModifierCode(trimmed) {
+        spec.singleModifier = code
+        return spec
+    }
+
+    let parts = trimmed.split(separator: "+").map { String($0).trimmingCharacters(in: .whitespaces) }
+    for part in parts {
+        let token = part.lowercased()
+        switch token {
+        case "control", "ctrl":
+            spec.control = true
+        case "commandorcontrol", "command", "cmd", "meta":
+            spec.command = true
+        case "alt", "option", "opt":
+            spec.option = true
+        case "shift":
+            spec.shift = true
+        case "fn", "function", "globe":
+            spec.fn = true
+        default:
+            if let code = exactModifierCode(part), let flag = KeyListenerService.shared.modifierFlag(for: code) {
+                if flag == .maskControl { spec.control = true }
+                else if flag == .maskAlternate { spec.option = true }
+                else if flag == .maskCommand { spec.command = true }
+                else if flag == .maskShift { spec.shift = true }
+                else if flag == .maskSecondaryFn { spec.fn = true }
+            } else if let code = keyCodeForName(part) {
+                spec.keyCode = code
+            }
+        }
+    }
+    return spec
+}
+
+func exactModifierCode(_ name: String) -> Int64? {
+    let needle = name.lowercased()
+    for (code, info) in MODIFIER_NAMES {
+        if info.id.lowercased() == needle {
+            return code
+        }
+    }
+    return nil
+}
+
+func keyCodeForName(_ name: String) -> Int64? {
+    switch name.lowercased() {
+    case "space": return 49
+    case "return", "enter": return 36
+    case "tab": return 48
+    case "escape", "esc": return 53
+    case "f1": return 122
+    case "f2": return 120
+    case "f3": return 99
+    case "f4": return 118
+    case "f5": return 96
+    case "f6": return 97
+    case "f7": return 98
+    case "f8": return 100
+    case "f9": return 101
+    case "f10": return 109
+    case "f11": return 103
+    case "f12": return 111
+    case "a": return 0
+    case "b": return 11
+    case "c": return 8
+    case "d": return 2
+    case "e": return 14
+    case "f": return 3
+    case "g": return 5
+    case "h": return 4
+    case "i": return 34
+    case "j": return 38
+    case "k": return 40
+    case "l": return 37
+    case "m": return 46
+    case "n": return 45
+    case "o": return 31
+    case "p": return 35
+    case "q": return 12
+    case "r": return 15
+    case "s": return 1
+    case "t": return 17
+    case "u": return 32
+    case "v": return 9
+    case "w": return 13
+    case "x": return 7
+    case "y": return 16
+    case "z": return 6
+    case "1": return 18
+    case "2": return 19
+    case "3": return 20
+    case "4": return 21
+    case "5": return 23
+    case "6": return 22
+    case "7": return 26
+    case "8": return 28
+    case "9": return 25
+    case "0": return 29
+    default: return nil
+    }
+}
+
 extension Array where Element == String {
     mutating func pushOrKeep(_ el: String) {
         if !self.contains(el) {
@@ -240,7 +542,6 @@ extension Array where Element == String {
     }
 }
 
-// Background thread to listen to standard input from Electron
 DispatchQueue.global(qos: .userInitiated).async {
     while let line = readLine() {
         guard let data = line.data(using: .utf8) else { continue }
@@ -260,45 +561,49 @@ DispatchQueue.global(qos: .userInitiated).async {
                     KeyListenerService.shared.isRecordingActive = false
                     KeyListenerService.shared.sendJSON(["event": "recording_stopped"])
                 }
+            } else if msg.cmd == "paste" {
+                let app = msg.app ?? ""
+                KeyListenerService.shared.postPaste(into: app)
             }
         }
     }
 }
 
-// Parse initial CLI arguments
 var initialKey = "LeftControl"
 var initialMode = "toggle"
 
-let args = CommandLine.arguments
-for i in 0..<args.count {
-    if args[i] == "--key" && i + 1 < args.count {
-        initialKey = args[i + 1]
+let cli = CommandLine.arguments
+for i in 0..<cli.count {
+    if cli[i] == "--key" && i + 1 < cli.count {
+        initialKey = cli[i + 1]
     }
-    if args[i] == "--mode" && i + 1 < args.count {
-        initialMode = args[i + 1]
+    if cli[i] == "--mode" && i + 1 < cli.count {
+        initialMode = cli[i + 1]
     }
 }
 
 KeyListenerService.shared.setHotkey(key: initialKey, mode: initialMode)
 
-// Setup macOS CGEventTap
-let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
+    | (1 << CGEventType.keyDown.rawValue)
+    | (1 << CGEventType.keyUp.rawValue)
 
 guard let eventTap = CGEvent.tapCreate(
     tap: .cgSessionEventTap,
     place: .headInsertEventTap,
     options: .listenOnly,
     eventsOfInterest: mask,
-    callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+    callback: { (_, type, event, _) -> Unmanaged<CGEvent>? in
         KeyListenerService.shared.handleEvent(type: type, event: event)
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     },
     userInfo: nil
 ) else {
-    KeyListenerService.shared.sendJSON(["event": "error", "message": "Failed to create CGEvent tap. Ensure Accessibility is enabled."])
+    KeyListenerService.shared.sendJSON(["event": "error", "message": "Allow this app under Privacy & Security → Accessibility, then try the shortcut again."])
     exit(1)
 }
 
+eventTapPort = eventTap
 let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
 CGEvent.tapEnable(tap: eventTap, enable: true)

@@ -48,7 +48,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUp
         <div className="pt-2 border-t border-neutral-800/80 flex items-center justify-between text-xs">
           <div>
             <span className="font-medium text-neutral-200">Recording Mode</span>
-            <p className="text-[11px] text-neutral-400">Choose how the shortcut behaves</p>
+            <p className="text-[11px] text-neutral-400">Hold the shortcut to record. Release it to transcribe and paste. A quick tap in Toggle keeps recording until the next tap.</p>
           </div>
           <div className="flex bg-neutral-800 p-0.5 rounded-lg border border-neutral-700">
             <button

@@ -46,6 +46,10 @@ export const electronAPI = {
     ipcRenderer.send('trigger-toggle-recording');
   },
 
+  reportRecordingError: (message: string) => {
+    ipcRenderer.send('recording-error', message);
+  },
+
   // Listeners from Main to Renderer
   onStartRecording: (callback: () => void) => {
     const handler = () => callback();
@@ -57,6 +61,12 @@ export const electronAPI = {
     const handler = () => callback();
     ipcRenderer.on('stop-recording', handler);
     return () => ipcRenderer.removeListener('stop-recording', handler);
+  },
+
+  onCancelRecording: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('cancel-recording', handler);
+    return () => ipcRenderer.removeListener('cancel-recording', handler);
   },
 
   onHUDStateChange: (callback: (state: HUDState) => void) => {
