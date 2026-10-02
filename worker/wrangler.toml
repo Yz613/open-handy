@@ -1,6 +1,7 @@
 name = "openhandy-ai-worker"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
+account_id = "8ca47af58f9e7de88c884c2903fc9f26"
 
 # Cloudflare Workers AI Binding
 # This allows serverless GPU execution of Whisper STT and Llama 3.3 LLM directly on Cloudflare edge
