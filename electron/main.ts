@@ -211,25 +211,53 @@ function openSettingsWindow(initialTab: string = 'general') {
   });
 }
 
-function registerGlobalHotkey() {
-  globalShortcut.unregisterAll();
-
+function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?: string } {
   const settings = store.getSettings();
-  const hotkey = settings.hotkey;
-  if (!hotkey) return;
+  const hotkeyToTest = targetHotkey || settings.hotkey;
+  if (!hotkeyToTest || !hotkeyToTest.trim()) {
+    globalShortcut.unregisterAll();
+    return { success: true };
+  }
+
+  // Normalize common aliases (e.g. Option -> Alt, Cmd -> CommandOrControl)
+  const normalized = hotkeyToTest
+    .replace(/Option/gi, 'Alt')
+    .replace(/Cmd/gi, 'CommandOrControl')
+    .replace(/Ctrl/gi, 'Control')
+    .trim();
 
   try {
-    const success = globalShortcut.register(hotkey, () => {
+    globalShortcut.unregisterAll();
+    const success = globalShortcut.register(normalized, () => {
       toggleRecording();
     });
 
     if (!success) {
-      console.warn(`Failed to register global hotkey: ${hotkey}`);
+      // Restore previous hotkey if we were testing a different one
+      if (settings.hotkey && settings.hotkey !== normalized) {
+        try {
+          globalShortcut.register(settings.hotkey, () => toggleRecording());
+        } catch (_) {}
+      }
+      return {
+        success: false,
+        error: `macOS could not register "${hotkeyToTest}". This shortcut may already be reserved by macOS (e.g. Spotlight) or another app.`,
+      };
     } else {
-      console.log(`Global hotkey registered: ${hotkey}`);
+      console.log(`Global hotkey registered: ${normalized}`);
+      return { success: true };
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('Error registering global shortcut:', err);
+    if (settings.hotkey && settings.hotkey !== normalized) {
+      try {
+        globalShortcut.register(settings.hotkey, () => toggleRecording());
+      } catch (_) {}
+    }
+    return {
+      success: false,
+      error: `Invalid shortcut format: ${err.message || 'Please use a valid combination.'}`,
+    };
   }
 }
 
@@ -303,12 +331,29 @@ function setupIPCHandlers() {
   ipcMain.handle('get-settings', () => store.getSettings());
 
   ipcMain.handle('update-settings', (_event, partial) => {
-    const updated = store.updateSettings(partial);
     if (partial.hotkey) {
-      registerGlobalHotkey();
+      registerGlobalHotkey(partial.hotkey);
     }
+    const updated = store.updateSettings(partial);
     updateTrayMenu();
     return updated;
+  });
+
+  ipcMain.handle('set-hotkey', (_event, newHotkey: string) => {
+    const regResult = registerGlobalHotkey(newHotkey);
+    if (regResult.success) {
+      // Normalize before saving (Option -> Alt, Cmd -> CommandOrControl)
+      const normalized = newHotkey
+        .replace(/Option/gi, 'Alt')
+        .replace(/Cmd/gi, 'CommandOrControl')
+        .replace(/Ctrl/gi, 'Control')
+        .trim();
+      const updated = store.updateSettings({ hotkey: normalized });
+      updateTrayMenu();
+      return { success: true, hotkey: normalized, settings: updated };
+    } else {
+      return { success: false, error: regResult.error };
+    }
   });
 
   ipcMain.handle('test-provider', async (_event, provider) => {

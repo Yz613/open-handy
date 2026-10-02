@@ -6,6 +6,8 @@ export const electronAPI = {
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> =>
     ipcRenderer.invoke('update-settings', settings),
+  setHotkey: (hotkey: string): Promise<{ success: boolean; error?: string; hotkey?: string; settings?: AppSettings }> =>
+    ipcRenderer.invoke('set-hotkey', hotkey),
 
   // Connection testing
   testProvider: (provider: string): Promise<{ success: boolean; message: string }> =>
