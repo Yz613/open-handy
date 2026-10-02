@@ -22,23 +22,24 @@ let recordingTimer: NodeJS.Timeout | null = null;
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
 
-function createTrayIcon(): NativeImage {
-  // 16x16 monochrome template icon for macOS menu bar
-  const size = 16;
-  const canvas = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-      <line x1="12" x2="12" y1="19" y2="22"/>
-    </svg>
-  `;
-  const img = nativeImage.createFromBuffer(Buffer.from(canvas));
-  img.setTemplateImage(true);
-  return img;
+const TRAY_IDLE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAhUlEQVR4nO2VSQ7AIAwDY6v//zK9V1QkxBFCMFfCxCwCs8vpIDm/ZV0QNE45aYuhePWe8XQAKdTqboA4tMXw+ABP4VPrmsudjqBV1HIw3tu60VEgUk+L4VmZ/C/ATwPPpRzWwCH5NvbiclMtjNbC5mgqHyYD9IJMuWiLwU6XsATWaC8b8QJzLA8x5euh8wAAAABJRU5ErkJggg==';
+
+const TRAY_RECORDING_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAoUlEQVR4nO2WOQ6AIBBFZ344kNZyfK31RlpqjOAsEGLkVSbyF4KARJ3O32GLaJ+GPWm4bCpPLhVsLYIa4ZrxqBGu0aFWuFSPmuESn+ByntfzOY4mCzbN/hp8J1PkaWeAGgO1Ijd7yXt3gcLgewXiy9eu3A2gxrDrIFKcA6nLKZAH4+EjXgJW3u0WH3jE3nBRAU8JiQ4lzSzjmRr/E3Y61JoDxbY+l9zw4b0AAAAASUVORK5CYII=';
+
+function createTrayIcon(recording: boolean = false): NativeImage {
+  const dataUrl = recording ? TRAY_RECORDING_DATA_URL : TRAY_IDLE_DATA_URL;
+  const img = nativeImage.createFromDataURL(dataUrl);
+  const resized = img.resize({ width: 18, height: 18 });
+  if (!recording) {
+    resized.setTemplateImage(true);
+  }
+  return resized;
 }
 
 function updateTrayMenu() {
   if (!tray) return;
+
+  tray.setImage(createTrayIcon(isRecording));
 
   const settings = store.getSettings();
   const activePreset = settings.presets.find(p => p.id === settings.activePresetId) || settings.presets[0];
