@@ -6,12 +6,14 @@ import * as os from 'os';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { AppStore } from './store';
 import { TextInjector } from './injector';
+import { loadEnvFiles } from './env';
 import { transcribeAudio, sttProviderConfigured, STTResult } from './providers/stt';
-
-app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 import { processWithLLM } from './providers/llm';
 import { testProviderConnection } from './providers/tester';
 import { HUDState, DictationRecord, AppSettings } from './providers/types';
+
+loadEnvFiles();
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let tray: Tray | null = null;
 let hudWindow: BrowserWindow | null = null;
@@ -185,6 +187,7 @@ function createHUDWindow() {
     movable: false,
     skipTaskbar: true,
     show: false,
+    roundedCorners: false,
     type: 'panel',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -339,7 +342,7 @@ function initNativeKeyListener() {
   }
 }
 
-function requestNativePaste(appName: string | null): Promise<boolean> {
+function requestNativePaste(target: { app: string | null; pid: number; bundleId: string | null }): Promise<boolean> {
   return new Promise((resolve) => {
     if (!keylistenerProcess?.stdin?.writable || !nativeListenerReady) {
       resolve(false);
@@ -357,7 +360,12 @@ function requestNativePaste(appName: string | null): Promise<boolean> {
       pendingPaste = null;
       resolve(ok);
     };
-    keylistenerProcess.stdin.write(JSON.stringify({ cmd: 'paste', app: appName || '' }) + '\n');
+    keylistenerProcess.stdin.write(JSON.stringify({
+      cmd: 'paste',
+      app: target.app || '',
+      pid: target.pid || 0,
+      bundleId: target.bundleId || '',
+    }) + '\n');
   });
 }
 
@@ -391,11 +399,13 @@ function handleKeyListenerMessage(msg: any) {
 
   if (msg.event === 'trigger') {
     const appName = typeof msg.app === 'string' ? msg.app : '';
+    const pid = Number(msg.pid) || 0;
+    const bundleId = typeof msg.bundleId === 'string' ? msg.bundleId : '';
     if (msg.action === 'toggle') {
-      if (!isRecording && appName) injector.setFrontmostApp(appName);
+      if (!isRecording) injector.setFrontmostApp(appName, pid, bundleId);
       toggleRecording();
     } else if (msg.action === 'start') {
-      startRecording(appName);
+      startRecording(appName, pid, bundleId);
     } else if (msg.action === 'stop') {
       stopRecording();
     } else if (msg.action === 'cancel') {
@@ -489,7 +499,11 @@ function setHUDState(state: HUDState) {
   } else {
     positionHUD();
     hudWindow.setAlwaysOnTop(true, 'screen-saver');
-    hudWindow.showInactive();
+    hudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    if (!hudWindow.isVisible()) {
+      hudWindow.showInactive();
+    }
+    hudWindow.moveTop();
   }
 
   if (hudReady && !hudWindow.webContents.isLoading()) {
@@ -505,13 +519,13 @@ function notifyHUD(channel: 'start-recording' | 'stop-recording' | 'cancel-recor
   }
 }
 
-function startRecording(fromApp?: string) {
+function startRecording(fromApp?: string, pid?: number, bundleId?: string) {
   if (isRecording) return;
   isRecording = true;
   recordingToken += 1;
 
-  if (fromApp && fromApp.trim()) {
-    injector.setFrontmostApp(fromApp);
+  if ((fromApp && fromApp.trim()) || (pid && pid > 0) || (bundleId && bundleId.trim())) {
+    injector.setFrontmostApp(fromApp || null, pid, bundleId);
   } else {
     void injector.captureFrontmostApp();
   }
@@ -753,6 +767,7 @@ function setupIPCHandlers() {
       }
 
       // 3. Inject text (Auto-paste and/or clipboard copy)
+      if (hudWindow && !hudWindow.isDestroyed()) hudWindow.hide();
       const pasteSuccess = await injector.pasteText(finalText, {
         autoPaste: settings.autoPaste,
         copyToClipboard: settings.copyToClipboard,

@@ -11,7 +11,7 @@ export const PipelineConfig: React.FC<PipelineConfigProps> = ({ settings, onUpda
   const sttProviders: { id: STTProviderId; name: string; desc: string; badge?: string }[] = [
     { id: 'groq', name: 'Groq Whisper', desc: 'Whisper Large v3/Turbo — Sub-second transcription', badge: 'Ultra Fast' },
     { id: 'azure', name: 'Microsoft Azure OpenAI', desc: 'Enterprise Whisper deployment' },
-    { id: 'vercel', name: 'Vercel AI Gateway', desc: 'Unified Gateway Whisper proxy' },
+    { id: 'vercel', name: 'Vercel AI Gateway', desc: 'Microsoft MAI Transcribe 2' },
     { id: 'openai', name: 'OpenAI Whisper', desc: 'Official OpenAI whisper-1 model' },
     { id: 'gemini', name: 'Google Gemini Audio', desc: 'Gemini 2.0 Flash multimodal audio ingestion' },
     { id: 'deepgram', name: 'Deepgram Nova', desc: 'Nova-2 / Nova-3 dedicated speech model' },

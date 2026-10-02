@@ -180,7 +180,7 @@ export const ProviderConfig: React.FC<ProviderConfigProps> = ({ settings, onUpda
             <label className="block text-neutral-400 mb-1">Gateway Base URL</label>
             <input
               type="text"
-              placeholder="https://api.vercel.ai/v1"
+              placeholder="https://ai-gateway.vercel.sh/v1"
               value={settings.vercel.baseUrl}
               onChange={(e) =>
                 onUpdate({ vercel: { ...settings.vercel, baseUrl: e.target.value } })
@@ -215,7 +215,7 @@ export const ProviderConfig: React.FC<ProviderConfigProps> = ({ settings, onUpda
             <label className="block text-neutral-400 mb-1">STT Model</label>
             <input
               type="text"
-              placeholder="whisper-1"
+              placeholder="microsoft/mai-transcribe-2"
               value={settings.vercel.sttModel}
               onChange={(e) =>
                 onUpdate({ vercel: { ...settings.vercel, sttModel: e.target.value } })

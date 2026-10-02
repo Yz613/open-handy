@@ -10,9 +10,9 @@ export interface AzureConfig {
 }
 
 export interface VercelGatewayConfig {
-  baseUrl: string;        // e.g. https://api.vercel.ai/v1 or custom gateway
+  baseUrl: string;        // e.g. https://ai-gateway.vercel.sh/v1 or custom gateway
   apiKey: string;
-  sttModel: string;       // e.g. whisper-1
+  sttModel: string;       // e.g. microsoft/mai-transcribe-2
   llmModel: string;       // e.g. openai/gpt-4o
 }
 
@@ -76,7 +76,7 @@ export interface PromptPreset {
 export interface AppSettings {
   hotkey: string;                       // e.g. "Alt+Space" or "CommandOrControl+Shift+Space"
   hotkeyMode: 'toggle' | 'pushToTalk';
-  autoPaste: boolean;                   // Default: true (Cmd+V into active app)
+  autoPaste: boolean;                   // Default: true (Cmd+V into the focused app)
   copyToClipboard: boolean;             // Default: true (can be toggled OFF)
   soundEffects: boolean;                // Default: true
   activePresetId: string;               // e.g. "clean"

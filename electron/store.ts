@@ -72,6 +72,14 @@ Output ONLY the formatted technical text with no conversational intro.`,
   }
 ];
 
+export function normalizeVercelBaseUrl(url: string | undefined): string {
+  const value = (url || '').trim();
+  if (!value || value.includes('api.vercel.ai')) {
+    return 'https://ai-gateway.vercel.sh/v1';
+  }
+  return value.replace(/\/$/, '');
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   hotkey: 'LeftControl',
   hotkeyMode: 'toggle',
@@ -90,9 +98,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     apiVersion: '2024-06-01'
   },
   vercel: {
-    baseUrl: 'https://api.vercel.ai/v1',
+    baseUrl: 'https://ai-gateway.vercel.sh/v1',
     apiKey: '',
-    sttModel: 'whisper-1',
+    sttModel: 'microsoft/mai-transcribe-2',
     llmModel: 'openai/gpt-4o'
   },
   groq: {
@@ -170,7 +178,11 @@ export class AppStore {
           ...DEFAULT_SETTINGS,
           ...parsed,
           azure: { ...DEFAULT_SETTINGS.azure, ...(parsed.azure || {}) },
-          vercel: { ...DEFAULT_SETTINGS.vercel, ...(parsed.vercel || {}) },
+          vercel: {
+            ...DEFAULT_SETTINGS.vercel,
+            ...(parsed.vercel || {}),
+            baseUrl: normalizeVercelBaseUrl(parsed.vercel?.baseUrl || DEFAULT_SETTINGS.vercel.baseUrl),
+          },
           groq: { ...DEFAULT_SETTINGS.groq, ...(parsed.groq || {}) },
           openai: { ...DEFAULT_SETTINGS.openai, ...(parsed.openai || {}) },
           gemini: { ...DEFAULT_SETTINGS.gemini, ...(parsed.gemini || {}) },

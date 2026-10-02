@@ -4,16 +4,28 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+export interface PasteTarget {
+  app: string | null;
+  pid: number;
+  bundleId: string | null;
+}
+
 export class TextInjector {
   private lastActiveApp: string | null = null;
-  private nativePaste: ((appName: string | null) => Promise<boolean>) | null = null;
+  private lastPid = 0;
+  private lastBundleId: string | null = null;
+  private nativePaste: ((target: PasteTarget) => Promise<boolean>) | null = null;
 
-  public setNativePaste(fn: (appName: string | null) => Promise<boolean>) {
+  public setNativePaste(fn: (target: PasteTarget) => Promise<boolean>) {
     this.nativePaste = fn;
   }
 
-  public setFrontmostApp(name: string | null) {
-    if (name && name.trim()) this.lastActiveApp = name.trim();
+  public setFrontmostApp(name: string | null, pid?: number, bundleId?: string | null) {
+    const trimmed = name?.trim() || '';
+    if (trimmed === 'OpenHandy' || trimmed === 'Electron') return;
+    if (trimmed) this.lastActiveApp = trimmed;
+    if (pid && pid > 0) this.lastPid = pid;
+    if (bundleId && bundleId.trim()) this.lastBundleId = bundleId.trim();
   }
 
   /**
@@ -46,7 +58,11 @@ export class TextInjector {
 
       if (options.autoPaste) {
         if (this.nativePaste) {
-          const pasted = await this.nativePaste(this.lastActiveApp);
+          const pasted = await this.nativePaste({
+            app: this.lastActiveApp,
+            pid: this.lastPid,
+            bundleId: this.lastBundleId,
+          });
           if (pasted) {
             if (!options.copyToClipboard && previousClipboard !== null) {
               setTimeout(() => {

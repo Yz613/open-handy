@@ -1,4 +1,5 @@
 import { AppSettings, LLMProviderId, PromptPreset } from './types';
+import { normalizeVercelBaseUrl } from '../store';
 
 export interface LLMResult {
   text: string;
@@ -102,7 +103,7 @@ async function processWithVercel(
     throw new Error('Vercel Gateway API Key is required in Settings.');
   }
 
-  const cleanBase = (baseUrl || 'https://api.vercel.ai/v1').replace(/\/$/, '');
+  const cleanBase = normalizeVercelBaseUrl(baseUrl);
   const url = `${cleanBase}/chat/completions`;
   const model = llmModel || 'openai/gpt-4o';
 

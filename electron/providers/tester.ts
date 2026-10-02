@@ -1,4 +1,5 @@
 import { AppSettings, STTProviderId, LLMProviderId } from './types';
+import { normalizeVercelBaseUrl } from '../store';
 
 export interface TestResult {
   success: boolean;
@@ -48,7 +49,7 @@ export async function testProviderConnection(
         if (!apiKey) {
           return { success: false, message: 'Vercel API Key is required.' };
         }
-        const cleanBase = (baseUrl || 'https://api.vercel.ai/v1').replace(/\/$/, '');
+        const cleanBase = normalizeVercelBaseUrl(baseUrl);
         const res = await fetch(`${cleanBase}/chat/completions`, {
           method: 'POST',
           headers: {

@@ -1,4 +1,5 @@
 import { AppSettings, STTProviderId } from './types';
+import { gatewayApiKey } from '../env';
 
 export interface STTResult {
   text: string;
@@ -11,7 +12,7 @@ export function sttProviderConfigured(settings: AppSettings): boolean {
     case 'azure':
       return Boolean(settings.azure.endpoint && settings.azure.apiKey);
     case 'vercel':
-      return Boolean(settings.vercel.apiKey);
+      return Boolean(gatewayApiKey(settings.vercel.apiKey));
     case 'groq':
       return Boolean(settings.groq.apiKey);
     case 'openai':
@@ -101,46 +102,56 @@ async function transcribeWithAzure(
   };
 }
 
-// 2. Vercel AI Gateway / Versacell
+const MAI_TRANSCRIBE_MODEL = 'microsoft/mai-transcribe-2';
+// File transcription lives on the gateway's transcription route. The OpenAI-style
+// /v1/audio/transcriptions upload is not served, and gateway.ai.vercel.com does not complete TLS.
+const MAI_TRANSCRIBE_URL = 'https://ai-gateway.vercel.sh/v4/ai/transcription-model';
+
+function transcriptionMediaType(mimeType: string): string {
+  if (mimeType.includes('mpeg') || mimeType.includes('mp3')) return 'audio/mpeg';
+  if (mimeType.includes('flac')) return 'audio/flac';
+  if (mimeType.includes('ogg') || mimeType.includes('opus')) return 'audio/ogg';
+  return 'audio/wav';
+}
+
+// 2. Vercel AI Gateway — Microsoft MAI Transcribe (recorded audio)
 async function transcribeWithVercel(
   audioBuffer: Buffer,
   mimeType: string,
   settings: AppSettings
 ): Promise<STTResult> {
-  const { baseUrl, apiKey, sttModel } = settings.vercel;
+  const apiKey = gatewayApiKey(settings.vercel.apiKey);
   if (!apiKey) {
-    throw new Error('Vercel Gateway API Key is required in Settings.');
+    throw new Error('Set AI_GATEWAY_API_KEY in .env to transcribe with Microsoft MAI.');
   }
 
-  const cleanBase = (baseUrl || 'https://api.vercel.ai/v1').replace(/\/$/, '');
-  const url = `${cleanBase}/audio/transcriptions`;
-
-  const extension = mimeType.includes('wav') ? 'wav' : 'webm';
-  const blob = new Blob([audioBuffer], { type: mimeType });
-
-  const formData = new FormData();
-  formData.append('file', blob, `dictation.${extension}`);
-  formData.append('model', sttModel || 'whisper-1');
-  formData.append('response_format', 'json');
-
-  const response = await fetch(url, {
+  const configured = (settings.vercel.sttModel || '').trim();
+  const model = !configured || configured === 'whisper-1' ? MAI_TRANSCRIBE_MODEL : configured;
+  const response = await fetch(MAI_TRANSCRIBE_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'ai-gateway-protocol-version': '0.0.1',
+      'ai-transcription-model-specification-version': '4',
+      'ai-model-id': model,
     },
-    body: formData,
+    body: JSON.stringify({
+      audio: audioBuffer.toString('base64'),
+      mediaType: transcriptionMediaType(mimeType),
+    }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Vercel Gateway STT error (${response.status}): ${errorText}`);
+    throw new Error(`Vercel Gateway STT error (${response.status}): ${errorText.slice(0, 240)}`);
   }
 
   const data = (await response.json()) as { text?: string };
   return {
     text: data.text || '',
     provider: 'vercel',
-    model: sttModel || 'whisper-1',
+    model,
   };
 }
 

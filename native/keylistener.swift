@@ -1,4 +1,5 @@
 import Cocoa
+import CoreAudio
 import Foundation
 
 struct StdinMessage: Codable {
@@ -6,6 +7,8 @@ struct StdinMessage: Codable {
     let key: String?
     let mode: String?
     let app: String?
+    let pid: Int32?
+    let bundleId: String?
 }
 
 let MODIFIER_NAMES: [Int64: (id: String, display: String)] = [
@@ -52,6 +55,14 @@ class KeyListenerService {
     var endOnRelease = false
     var armWork: DispatchWorkItem?
 
+    var audioHoldEngaged = false
+    var audioSentMediaKey = false
+    var audioHadMute = false
+    var audioPreviousMute: UInt32 = 0
+    var audioHadVolume = false
+    var audioPreviousVolume: Float32 = 1
+    var audioGeneration = 0
+
     func setHotkey(key: String, mode: String) {
         self.targetKey = key
         self.mode = mode
@@ -73,15 +84,23 @@ class KeyListenerService {
         }
     }
 
-    func frontmostAppName() -> String {
-        return NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+    func frontmostTarget() -> (name: String, pid: Int32, bundleId: String) {
+        let app = NSWorkspace.shared.frontmostApplication
+        return (
+            app?.localizedName ?? "",
+            app?.processIdentifier ?? 0,
+            app?.bundleIdentifier ?? ""
+        )
     }
 
     func trigger(_ action: String) {
+        let target = frontmostTarget()
         sendJSON([
             "event": "trigger",
             "action": action,
-            "app": frontmostAppName()
+            "app": target.name,
+            "pid": Int(target.pid),
+            "bundleId": target.bundleId
         ])
     }
 
@@ -128,7 +147,10 @@ class KeyListenerService {
             return
         }
         endOnRelease = false
-        if mode == "pushToTalk" {
+        pauseAudioForHold()
+        // Modifier holds start immediately. A delayed arm was cancelled by the extra
+        // keyDown macOS emits alongside Control, so the hold never began.
+        if mode == "pushToTalk" || spec.singleModifier != nil {
             beginDictation()
         } else {
             scheduleArm()
@@ -140,6 +162,7 @@ class KeyListenerService {
         armWork = nil
         let duration = Date().timeIntervalSince1970 - keyDownTime
         isKeyDown = false
+        scheduleAudioResume()
 
         if otherKeyPressed {
             if endOnRelease {
@@ -174,12 +197,193 @@ class KeyListenerService {
     }
 
     func noteOtherKey() {
+        // The Control press itself arrives with a companion key event. Cancelling
+        // on that event made a hold look like it did nothing.
+        if mode == "pushToTalk" { return }
+        if Date().timeIntervalSince1970 - keyDownTime < 0.25 { return }
         otherKeyPressed = true
         armWork?.cancel()
         armWork = nil
         if dictationActive && !latched {
             endDictation(action: "cancel")
         }
+    }
+
+    func configuredModifierIsDown() -> Bool {
+        guard let code = spec.singleModifier else { return false }
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(truncatingIfNeeded: code)) {
+            return true
+        }
+        // Some keyboards never report the left/right keycode. The modifier flag still changes.
+        if let flag = modifierFlag(for: code) {
+            return CGEventSource.flagsState(.hidSystemState).contains(flag)
+        }
+        return false
+    }
+
+    func pollHotkey() {
+        if let tap = eventTapPort {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+        guard spec.singleModifier != nil else { return }
+        let down = configuredModifierIsDown()
+        if down && !isKeyDown {
+            handlePressBegan()
+        } else if !down && isKeyDown {
+            handlePressEnded()
+        }
+    }
+
+    func pauseAudioForHold() {
+        if audioHoldEngaged { return }
+        let device = defaultOutputDevice()
+        guard device != 0, outputDeviceIsRunning(device) else { return }
+
+        audioGeneration += 1
+        audioHoldEngaged = true
+        if let mute = readMute(device) {
+            audioHadMute = true
+            audioPreviousMute = mute
+            if mute == 0 {
+                writeMute(device, 1)
+            }
+        }
+        if let volume = readVolume(device) {
+            audioHadVolume = true
+            audioPreviousVolume = volume
+            writeVolume(device, 0)
+        }
+        sendPlayPauseKey()
+        audioSentMediaKey = true
+    }
+
+    func scheduleAudioResume() {
+        let generation = audioGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+            guard let self = self else { return }
+            if self.isKeyDown || self.audioGeneration != generation { return }
+            self.resumeAudioAfterHold()
+        }
+    }
+
+    func resumeAudioAfterHold() {
+        guard audioHoldEngaged else { return }
+        let device = defaultOutputDevice()
+        if audioSentMediaKey {
+            sendPlayPauseKey()
+        }
+        if device != 0 {
+            if audioHadVolume {
+                writeVolume(device, audioPreviousVolume)
+            }
+            if audioHadMute {
+                writeMute(device, audioPreviousMute)
+            }
+        }
+        audioHoldEngaged = false
+        audioSentMediaKey = false
+        audioHadMute = false
+        audioHadVolume = false
+    }
+
+    func defaultOutputDevice() -> AudioDeviceID {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &size,
+            &deviceID
+        )
+        return status == noErr ? deviceID : 0
+    }
+
+    func outputDeviceIsRunning(_ device: AudioDeviceID) -> Bool {
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running)
+        return status == noErr && running != 0
+    }
+
+    func readMute(_ device: AudioDeviceID) -> UInt32? {
+        var mute: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &mute)
+        return status == noErr ? mute : nil
+    }
+
+    func writeMute(_ device: AudioDeviceID, _ mute: UInt32) {
+        var value = mute
+        let size = UInt32(MemoryLayout<UInt32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
+    }
+
+    func readVolume(_ device: AudioDeviceID) -> Float32? {
+        var volume: Float32 = 1
+        var size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &volume)
+        return status == noErr ? volume : nil
+    }
+
+    func writeVolume(_ device: AudioDeviceID, _ volume: Float32) {
+        var value = volume
+        let size = UInt32(MemoryLayout<Float32>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
+    }
+
+    func sendPlayPauseKey() {
+        let key: Int = 16 // NX_KEYTYPE_PLAY
+        func post(_ down: Bool) {
+            let flag: UInt = down ? 0xA00 : 0xB00
+            let data1 = (key << 16) | ((down ? 0xA : 0xB) << 8)
+            guard let event = NSEvent.otherEvent(
+                with: .systemDefined,
+                location: .zero,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: flag),
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 8,
+                data1: data1,
+                data2: -1
+            ) else { return }
+            event.cgEvent?.post(tap: .cghidEventTap)
+        }
+        post(true)
+        usleep(30_000)
+        post(false)
     }
 
     func handleEvent(type: CGEventType, event: CGEvent) {
@@ -336,17 +540,33 @@ class KeyListenerService {
         return false
     }
 
-    func postPaste(into appName: String) {
+    func postPaste(into appName: String, pid: Int32, bundleId: String) {
         DispatchQueue.main.async {
-            if !appName.isEmpty,
-               let target = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == appName }) {
+            let selfPid = ProcessInfo.processInfo.processIdentifier
+            let target: NSRunningApplication? = {
+                if pid > 0, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated, app.processIdentifier != selfPid {
+                    return app
+                }
+                if !bundleId.isEmpty {
+                    return NSWorkspace.shared.runningApplications.first {
+                        $0.bundleIdentifier == bundleId && $0.processIdentifier != selfPid
+                    }
+                }
+                if !appName.isEmpty {
+                    return NSWorkspace.shared.runningApplications.first {
+                        $0.localizedName == appName && $0.processIdentifier != selfPid
+                    }
+                }
+                return nil
+            }()
+            if let target {
                 if #available(macOS 14.0, *) {
                     _ = target.activate(from: NSRunningApplication.current, options: [.activateAllWindows])
                 } else {
                     _ = target.activate(options: [.activateIgnoringOtherApps])
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
                 let ok = self.postCommandV()
                 self.sendJSON(["event": "paste_done", "ok": ok])
             }
@@ -354,7 +574,15 @@ class KeyListenerService {
     }
 
     func postCommandV() -> Bool {
-        let source = CGEventSource(stateID: .combinedSessionState)
+        // HID source plus an explicit Command flag. combinedSessionState keeps Control
+        // in the event after a Control hold, and Control+Command+V does not paste.
+        let source = CGEventSource(stateID: .hidSystemState)
+        if let clear = CGEvent(source: source) {
+            clear.type = .flagsChanged
+            clear.flags = []
+            clear.post(tap: .cghidEventTap)
+            usleep(20_000)
+        }
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) else {
             return false
@@ -563,7 +791,9 @@ DispatchQueue.global(qos: .userInitiated).async {
                 }
             } else if msg.cmd == "paste" {
                 let app = msg.app ?? ""
-                KeyListenerService.shared.postPaste(into: app)
+                let pid = msg.pid ?? 0
+                let bundleId = msg.bundleId ?? ""
+                KeyListenerService.shared.postPaste(into: app, pid: pid, bundleId: bundleId)
             }
         }
     }
@@ -607,6 +837,10 @@ eventTapPort = eventTap
 let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
 CGEvent.tapEnable(tap: eventTap, enable: true)
+
+Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
+    KeyListenerService.shared.pollHotkey()
+}
 
 KeyListenerService.shared.sendJSON(["event": "ready", "key": initialKey, "mode": initialMode])
 CFRunLoopRun()
