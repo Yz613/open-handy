@@ -342,30 +342,32 @@ function initNativeKeyListener() {
   }
 }
 
-function requestNativePaste(target: { app: string | null; pid: number; bundleId: string | null }): Promise<boolean> {
+function requestNativePaste(target: { app: string | null; pid: number; bundleId: string | null; text: string }): Promise<boolean> {
   return new Promise((resolve) => {
-    if (!keylistenerProcess?.stdin?.writable || !nativeListenerReady) {
+    const exePath = getKeylistenerPath();
+    if (!fs.existsSync(exePath)) {
       resolve(false);
       return;
     }
-    if (pendingPaste) pendingPaste(false);
+    // A second copy of the helper inserts into the app that had the cursor.
+    // The long-running copy owns the keyboard tap, and events it posts never
+    // reach other apps. stdio ignore also dropped the target pid's text.
+    const child = spawn(exePath, ['--paste', String(target.pid || 0), '--app', target.app || ''], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    child.stdin?.end(target.text || '');
     const timer = setTimeout(() => {
-      if (pendingPaste) {
-        pendingPaste = null;
-        resolve(false);
-      }
-    }, 1600);
-    pendingPaste = (ok: boolean) => {
+      try { child.kill(); } catch (_) {}
+      resolve(false);
+    }, 3000);
+    child.on('error', () => {
       clearTimeout(timer);
-      pendingPaste = null;
-      resolve(ok);
-    };
-    keylistenerProcess.stdin.write(JSON.stringify({
-      cmd: 'paste',
-      app: target.app || '',
-      pid: target.pid || 0,
-      bundleId: target.bundleId || '',
-    }) + '\n');
+      resolve(false);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0);
+    });
   });
 }
 
@@ -381,7 +383,6 @@ function handleKeyListenerMessage(msg: any) {
     console.error('Key listener:', msg.message);
     if (!accessibilityWarned) {
       accessibilityWarned = true;
-      try { systemPreferences.isTrustedAccessibilityClient(true); } catch (_) {}
       setHUDState({
         status: 'error',
         message: msg.message || 'Enable Accessibility for OpenHandy, then try again.',

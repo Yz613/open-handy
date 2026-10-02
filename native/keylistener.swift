@@ -9,6 +9,7 @@ struct StdinMessage: Codable {
     let app: String?
     let pid: Int32?
     let bundleId: String?
+    let text: String?
 }
 
 let MODIFIER_NAMES: [Int64: (id: String, display: String)] = [
@@ -62,6 +63,9 @@ class KeyListenerService {
     var audioHadVolume = false
     var audioPreviousVolume: Float32 = 1
     var audioGeneration = 0
+    var focusedElement: AXUIElement?
+    var focusedPid: pid_t = 0
+    var pasteInFlight = false
 
     func setHotkey(key: String, mode: String) {
         self.targetKey = key
@@ -222,7 +226,7 @@ class KeyListenerService {
     }
 
     func pollHotkey() {
-        if let tap = eventTapPort {
+        if !pasteInFlight, let tap = eventTapPort {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
         guard spec.singleModifier != nil else { return }
@@ -540,58 +544,130 @@ class KeyListenerService {
         return false
     }
 
-    func postPaste(into appName: String, pid: Int32, bundleId: String) {
-        DispatchQueue.main.async {
-            let selfPid = ProcessInfo.processInfo.processIdentifier
-            let target: NSRunningApplication? = {
-                if pid > 0, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated, app.processIdentifier != selfPid {
-                    return app
-                }
-                if !bundleId.isEmpty {
-                    return NSWorkspace.shared.runningApplications.first {
-                        $0.bundleIdentifier == bundleId && $0.processIdentifier != selfPid
-                    }
-                }
-                if !appName.isEmpty {
-                    return NSWorkspace.shared.runningApplications.first {
-                        $0.localizedName == appName && $0.processIdentifier != selfPid
-                    }
-                }
-                return nil
-            }()
-            if let target {
-                if #available(macOS 14.0, *) {
-                    _ = target.activate(from: NSRunningApplication.current, options: [.activateAllWindows])
-                } else {
-                    _ = target.activate(options: [.activateIgnoringOtherApps])
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                let ok = self.postCommandV()
-                self.sendJSON(["event": "paste_done", "ok": ok])
-            }
+    func captureFocusedElement() {
+        let system = AXUIElementCreateSystemWide()
+        var raw: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &raw)
+        guard err == .success, let raw else { return }
+        let element = raw as! AXUIElement
+        var pid: pid_t = 0
+        if AXUIElementGetPid(element, &pid) == .success {
+            if pid == ProcessInfo.processInfo.processIdentifier { return }
+            focusedPid = pid
         }
+        focusedElement = element
     }
 
-    func postCommandV() -> Bool {
-        // HID source plus an explicit Command flag. combinedSessionState keeps Control
-        // in the event after a Control hold, and Control+Command+V does not paste.
-        let source = CGEventSource(stateID: .hidSystemState)
-        if let clear = CGEvent(source: source) {
-            clear.type = .flagsChanged
-            clear.flags = []
-            clear.post(tap: .cghidEventTap)
-            usleep(20_000)
+    func postPaste(text: String, into appName: String, pid: Int32, bundleId: String) {
+        let target = resolveTarget(appName: appName, pid: pid, bundleId: bundleId)
+        let targetPid = target?.processIdentifier ?? pid
+        let ok = deliverText(text, to: targetPid)
+        sendJSON(["event": "paste_done", "ok": ok])
+    }
+
+    func resolveTarget(appName: String, pid: Int32, bundleId: String) -> NSRunningApplication? {
+        let selfPid = ProcessInfo.processInfo.processIdentifier
+        let preferred = focusedPid > 0 ? focusedPid : pid
+        if preferred > 0, let app = NSRunningApplication(processIdentifier: preferred), !app.isTerminated, app.processIdentifier != selfPid {
+            return app
         }
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) else {
+        if !bundleId.isEmpty {
+            return NSWorkspace.shared.runningApplications.first {
+                $0.bundleIdentifier == bundleId && $0.processIdentifier != selfPid
+            }
+        }
+        if !appName.isEmpty {
+            return NSWorkspace.shared.runningApplications.first {
+                $0.localizedName == appName && $0.processIdentifier != selfPid
+            }
+        }
+        return nil
+    }
+
+    func elementContains(_ text: String, _ element: AXUIElement) -> Bool {
+        let probe = String(text.prefix(48))
+        guard !probe.isEmpty else { return false }
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &raw) == .success,
+              let value = raw as? String else {
             return false
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        usleep(40_000)
-        up.post(tap: .cghidEventTap)
+        return value.contains(probe)
+    }
+
+    func focusTextElement(in pid: pid_t) -> AXUIElement? {
+        guard pid > 0 else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &raw) == .success,
+              let raw else {
+            return nil
+        }
+        let element = raw as! AXUIElement
+        AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        var window: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &window) == .success, let window {
+            AXUIElementPerformAction(window as! AXUIElement, kAXRaiseAction as CFString)
+        }
+        return element
+    }
+
+    func insertIntoFocusedField(_ text: String, pid: pid_t) -> Bool {
+        guard !text.isEmpty, let element = focusTextElement(in: pid) else { return false }
+        let before = elementValue(element)
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success else {
+            return false
+        }
+        guard let after = elementValue(element) else { return false }
+        let probe = String(text.prefix(48))
+        return after.contains(probe) && after != before
+    }
+
+    func elementValue(_ element: AXUIElement) -> String? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &raw) == .success else {
+            return nil
+        }
+        return raw as? String
+    }
+
+    func deliverText(_ text: String, to pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        if insertIntoFocusedField(text, pid: pid) {
+            return true
+        }
+        _ = focusTextElement(in: pid)
+        Thread.sleep(forTimeInterval: 0.2)
+        return postCommandV(to: pid)
+    }
+
+    func postCommandV(to pid: pid_t) -> Bool {
+        // Press the Command key, then V. A flag on V alone is dropped: the system
+        // modifier state still says Command is up, so the target app does not paste.
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
+        source.localEventsSuppressionInterval = 0
+
+        func key(_ code: CGKeyCode, _ down: Bool, _ flags: CGEventFlags) -> CGEvent? {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+            event?.flags = flags
+            return event
+        }
+        guard let cmdDown = key(0x37, true, .maskCommand),
+              let vDown = key(0x09, true, .maskCommand),
+              let vUp = key(0x09, false, .maskCommand),
+              let cmdUp = key(0x37, false, []) else {
+            return false
+        }
+        let events = [cmdDown, vDown, vUp, cmdUp]
+        for event in events {
+            if pid > 0 {
+                event.postToPid(pid)
+            } else {
+                event.post(tap: .cghidEventTap)
+            }
+            usleep(20_000)
+        }
         return true
     }
 
@@ -770,6 +846,27 @@ extension Array where Element == String {
     }
 }
 
+if CommandLine.arguments.contains("--paste") {
+    var pastePid: Int32 = 0
+    var pasteApp = ""
+    let args = CommandLine.arguments
+    for i in 0..<args.count {
+        if args[i] == "--paste", i + 1 < args.count, let value = Int32(args[i + 1]) {
+            pastePid = value
+        }
+        if args[i] == "--app", i + 1 < args.count {
+            pasteApp = args[i + 1]
+        }
+    }
+    if pastePid <= 0, !pasteApp.isEmpty,
+       let match = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == pasteApp }) {
+        pastePid = match.processIdentifier
+    }
+    let pastedText = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let ok = KeyListenerService.shared.deliverText(pastedText, to: pastePid)
+    exit(ok ? 0 : 1)
+}
+
 DispatchQueue.global(qos: .userInitiated).async {
     while let line = readLine() {
         guard let data = line.data(using: .utf8) else { continue }
@@ -793,7 +890,8 @@ DispatchQueue.global(qos: .userInitiated).async {
                 let app = msg.app ?? ""
                 let pid = msg.pid ?? 0
                 let bundleId = msg.bundleId ?? ""
-                KeyListenerService.shared.postPaste(into: app, pid: pid, bundleId: bundleId)
+                let text = msg.text ?? ""
+                KeyListenerService.shared.postPaste(text: text, into: app, pid: pid, bundleId: bundleId)
             }
         }
     }

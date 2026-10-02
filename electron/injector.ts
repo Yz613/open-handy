@@ -8,6 +8,7 @@ export interface PasteTarget {
   app: string | null;
   pid: number;
   bundleId: string | null;
+  text: string;
 }
 
 export class TextInjector {
@@ -62,6 +63,7 @@ export class TextInjector {
             app: this.lastActiveApp,
             pid: this.lastPid,
             bundleId: this.lastBundleId,
+            text,
           });
           if (pasted) {
             if (!options.copyToClipboard && previousClipboard !== null) {
@@ -73,33 +75,7 @@ export class TextInjector {
           }
         }
 
-        // 2. Reactivate the previously active app if known
-        if (this.lastActiveApp && this.lastActiveApp !== 'OpenHandy' && this.lastActiveApp !== 'Electron') {
-          try {
-            const escaped = this.lastActiveApp.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-            await execAsync(`osascript -e 'tell application "${escaped}" to activate'`);
-            await new Promise(res => setTimeout(res, 180));
-          } catch (appErr) {
-            console.warn(`Could not activate app ${this.lastActiveApp}`, appErr);
-          }
-        }
-
-        // 3. Synthesize Command + V keystroke via System Events
-        const pasteScript = `tell application "System Events" to keystroke "v" using command down`;
-        await execAsync(`osascript -e '${pasteScript}'`);
-
-        // 4. If copyToClipboard was false, restore the previous clipboard after a short delay
-        if (!options.copyToClipboard && previousClipboard !== null) {
-          setTimeout(() => {
-            try {
-              clipboard.writeText(previousClipboard);
-            } catch (e) {
-              console.warn('Failed to restore previous clipboard', e);
-            }
-          }, 350);
-        }
-
-        return true;
+        return false;
       }
 
       return true;
@@ -114,10 +90,9 @@ export class TextInjector {
    */
   public async checkAccessibilityPermission(): Promise<boolean> {
     try {
-      const script = `tell application "System Events" to get name of first application process whose frontmost is true`;
-      await execAsync(`osascript -e '${script}'`);
-      return true;
-    } catch (err: any) {
+      const { systemPreferences } = require('electron');
+      return systemPreferences.isTrustedAccessibilityClient(false);
+    } catch {
       return false;
     }
   }
