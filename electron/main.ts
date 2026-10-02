@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, screen, nativeImage, NativeImage, shell } from 'electron';
 import * as path from 'path';
-import { exec } from 'child_process';
+import * as fs from 'fs';
+import { exec, spawn, ChildProcess } from 'child_process';
 import { AppStore } from './store';
 import { TextInjector } from './injector';
 import { transcribeAudio } from './providers/stt';
@@ -12,6 +13,7 @@ let tray: Tray | null = null;
 let hudWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
 let isQuitting = false;
+let keylistenerProcess: ChildProcess | null = null;
 
 const store = new AppStore();
 const injector = new TextInjector();
@@ -211,15 +213,93 @@ function openSettingsWindow(initialTab: string = 'general') {
   });
 }
 
+const MODIFIER_HOTKEYS = [
+  'LeftControl', 'RightControl', 'LeftOption', 'RightOption',
+  'LeftCommand', 'RightCommand', 'LeftShift', 'RightShift', 'Fn', 'CapsLock'
+];
+
+function isModifierHotkey(hotkey: string): boolean {
+  if (!hotkey) return false;
+  return MODIFIER_HOTKEYS.some(m => m.toLowerCase() === hotkey.toLowerCase().trim());
+}
+
+function getKeylistenerPath(): string {
+  const prodPath = path.join(process.resourcesPath, 'bin', 'keylistener');
+  if (fs.existsSync(prodPath)) return prodPath;
+  const devPath = path.join(__dirname, '../bin', 'keylistener');
+  if (fs.existsSync(devPath)) return devPath;
+  return path.join(__dirname, '../../bin', 'keylistener');
+}
+
+function updateNativeKeyListener(key: string, mode: string) {
+  if (keylistenerProcess && keylistenerProcess.stdin?.writable) {
+    keylistenerProcess.stdin.write(JSON.stringify({ cmd: 'set_hotkey', key, mode }) + '\n');
+  }
+}
+
+function initNativeKeyListener() {
+  const exePath = getKeylistenerPath();
+  if (!fs.existsSync(exePath)) {
+    console.warn('Native keylistener binary not found at:', exePath);
+    return;
+  }
+
+  const settings = store.getSettings();
+  const args = ['--key', settings.hotkey, '--mode', settings.hotkeyMode];
+
+  try {
+    keylistenerProcess = spawn(exePath, args, { stdio: ['pipe', 'pipe', 'inherit'] });
+
+    keylistenerProcess.stdout?.on('data', (chunk: Buffer) => {
+      const lines = chunk.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          handleKeyListenerMessage(msg);
+        } catch (_) {}
+      }
+    });
+
+    keylistenerProcess.on('exit', () => {
+      keylistenerProcess = null;
+    });
+  } catch (err) {
+    console.error('Failed to start native keylistener:', err);
+  }
+}
+
+function handleKeyListenerMessage(msg: any) {
+  if (msg.event === 'trigger') {
+    if (msg.action === 'toggle') {
+      toggleRecording();
+    } else if (msg.action === 'start') {
+      startRecording();
+    } else if (msg.action === 'stop') {
+      stopRecording();
+    }
+  } else if (msg.event === 'recorded_key') {
+    settingsWindow?.webContents.send('native-key-recorded', msg);
+  }
+}
+
 function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?: string } {
   const settings = store.getSettings();
   const hotkeyToTest = targetHotkey || settings.hotkey;
   if (!hotkeyToTest || !hotkeyToTest.trim()) {
     globalShortcut.unregisterAll();
+    updateNativeKeyListener('', settings.hotkeyMode);
     return { success: true };
   }
 
-  // Normalize common aliases (e.g. Option -> Alt, Cmd -> CommandOrControl)
+  // 1. If it's a standalone modifier key (like LeftControl, RightControl, Fn, LeftOption)
+  if (isModifierHotkey(hotkeyToTest)) {
+    globalShortcut.unregisterAll();
+    updateNativeKeyListener(hotkeyToTest, settings.hotkeyMode);
+    console.log(`Native modifier hotkey activated: ${hotkeyToTest}`);
+    return { success: true };
+  }
+
+  // 2. Standard accelerator shortcut (e.g. Alt+Space, Control+Space)
   const normalized = hotkeyToTest
     .replace(/Option/gi, 'Alt')
     .replace(/Cmd/gi, 'CommandOrControl')
@@ -233,10 +313,13 @@ function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?
     });
 
     if (!success) {
-      // Restore previous hotkey if we were testing a different one
       if (settings.hotkey && settings.hotkey !== normalized) {
         try {
-          globalShortcut.register(settings.hotkey, () => toggleRecording());
+          if (isModifierHotkey(settings.hotkey)) {
+            updateNativeKeyListener(settings.hotkey, settings.hotkeyMode);
+          } else {
+            globalShortcut.register(settings.hotkey, () => toggleRecording());
+          }
         } catch (_) {}
       }
       return {
@@ -245,13 +328,18 @@ function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?
       };
     } else {
       console.log(`Global hotkey registered: ${normalized}`);
+      updateNativeKeyListener(normalized, settings.hotkeyMode);
       return { success: true };
     }
   } catch (err: any) {
     console.error('Error registering global shortcut:', err);
     if (settings.hotkey && settings.hotkey !== normalized) {
       try {
-        globalShortcut.register(settings.hotkey, () => toggleRecording());
+        if (isModifierHotkey(settings.hotkey)) {
+          updateNativeKeyListener(settings.hotkey, settings.hotkeyMode);
+        } else {
+          globalShortcut.register(settings.hotkey, () => toggleRecording());
+        }
       } catch (_) {}
     }
     return {
@@ -333,6 +421,8 @@ function setupIPCHandlers() {
   ipcMain.handle('update-settings', (_event, partial) => {
     if (partial.hotkey) {
       registerGlobalHotkey(partial.hotkey);
+    } else if (partial.hotkeyMode) {
+      updateNativeKeyListener(store.getSettings().hotkey, partial.hotkeyMode);
     }
     const updated = store.updateSettings(partial);
     updateTrayMenu();
@@ -342,17 +432,31 @@ function setupIPCHandlers() {
   ipcMain.handle('set-hotkey', (_event, newHotkey: string) => {
     const regResult = registerGlobalHotkey(newHotkey);
     if (regResult.success) {
-      // Normalize before saving (Option -> Alt, Cmd -> CommandOrControl)
-      const normalized = newHotkey
-        .replace(/Option/gi, 'Alt')
-        .replace(/Cmd/gi, 'CommandOrControl')
-        .replace(/Ctrl/gi, 'Control')
-        .trim();
+      // Normalize before saving if standard, or keep identifier if modifier
+      const normalized = isModifierHotkey(newHotkey)
+        ? newHotkey.trim()
+        : newHotkey
+            .replace(/Option/gi, 'Alt')
+            .replace(/Cmd/gi, 'CommandOrControl')
+            .replace(/Ctrl/gi, 'Control')
+            .trim();
       const updated = store.updateSettings({ hotkey: normalized });
       updateTrayMenu();
       return { success: true, hotkey: normalized, settings: updated };
     } else {
       return { success: false, error: regResult.error };
+    }
+  });
+
+  ipcMain.on('start-recording-hotkey', () => {
+    if (keylistenerProcess && keylistenerProcess.stdin?.writable) {
+      keylistenerProcess.stdin.write(JSON.stringify({ cmd: 'start_recording' }) + '\n');
+    }
+  });
+
+  ipcMain.on('stop-recording-hotkey', () => {
+    if (keylistenerProcess && keylistenerProcess.stdin?.writable) {
+      keylistenerProcess.stdin.write(JSON.stringify({ cmd: 'stop_recording' }) + '\n');
     }
   });
 
@@ -508,6 +612,7 @@ app.whenReady().then(() => {
   createHUDWindow();
   setupIPCHandlers();
   registerGlobalHotkey();
+  initNativeKeyListener();
 
   // If user hasn't configured any API key yet, open settings on first launch
   const settings = store.getSettings();
@@ -519,6 +624,7 @@ app.whenReady().then(() => {
     settings.anthropic.apiKey ||
     settings.deepgram.apiKey ||
     settings.vercel.apiKey ||
+    settings.cloudflare?.apiToken ||
     settings.custom.baseUrl
   );
 
@@ -535,10 +641,12 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  try { keylistenerProcess?.kill(); } catch (_) {}
 });
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  try { keylistenerProcess?.kill(); } catch (_) {}
 });
 
 app.on('window-all-closed', () => {

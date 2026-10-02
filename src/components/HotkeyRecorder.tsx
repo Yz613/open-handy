@@ -8,16 +8,40 @@ interface HotkeyRecorderProps {
 
 export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, onSave }) => {
   const [isRecording, setIsRecording] = useState(false);
-  const [preview, setPreview] = useState(currentHotkey || 'Alt+Space');
+  const [preview, setPreview] = useState(currentHotkey || 'LeftControl');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showManual, setShowManual] = useState(false);
-  const [manualText, setManualText] = useState(currentHotkey || 'Alt+Space');
+  const [manualText, setManualText] = useState(currentHotkey || 'LeftControl');
   const [liveModifiers, setLiveModifiers] = useState<string[]>([]);
 
   useEffect(() => {
-    setPreview(currentHotkey || 'Alt+Space');
-    setManualText(currentHotkey || 'Alt+Space');
+    setPreview(currentHotkey || 'LeftControl');
+    setManualText(currentHotkey || 'LeftControl');
   }, [currentHotkey]);
+
+  // Hook into native macOS listener for hardware-level modifier keys (Left Control, Right Control, Fn, etc.)
+  useEffect(() => {
+    if (!window.electronAPI?.onNativeKeyRecorded) return;
+
+    const unsub = window.electronAPI.onNativeKeyRecorded((data) => {
+      if (isRecording) {
+        setIsRecording(false);
+        setLiveModifiers([]);
+        applyHotkey(data.key);
+      }
+    });
+
+    return () => unsub();
+  }, [isRecording]);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    if (isRecording) {
+      window.electronAPI.startRecordingHotkey();
+    } else {
+      window.electronAPI.stopRecordingHotkey();
+    }
+  }, [isRecording]);
 
   // Translate key code into clean Electron accelerator key name
   const getAcceleratorKeyName = (e: KeyboardEvent): string => {
@@ -59,9 +83,15 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
         setPreview(savedKey);
         setManualText(savedKey);
         onSave(savedKey);
-        setStatusMessage({ type: 'success', text: `✓ Saved! Shortcut registered & active: ${formatDisplayHotkey(savedKey)}` });
+        setStatusMessage({
+          type: 'success',
+          text: `✓ Saved! Shortcut registered & active: ${formatDisplayHotkey(savedKey)}`,
+        });
       } else {
-        setStatusMessage({ type: 'error', text: result.error || 'Failed to register shortcut with macOS.' });
+        setStatusMessage({
+          type: 'error',
+          text: result.error || 'Failed to register shortcut with macOS.',
+        });
       }
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Error saving shortcut.' });
@@ -82,6 +112,32 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
         return;
       }
 
+      // Check for standalone modifier keys in browser event
+      if (e.code === 'ControlLeft') {
+        setIsRecording(false);
+        setLiveModifiers([]);
+        applyHotkey('LeftControl');
+        return;
+      }
+      if (e.code === 'ControlRight') {
+        setIsRecording(false);
+        setLiveModifiers([]);
+        applyHotkey('RightControl');
+        return;
+      }
+      if (e.code === 'AltLeft') {
+        setIsRecording(false);
+        setLiveModifiers([]);
+        applyHotkey('LeftOption');
+        return;
+      }
+      if (e.code === 'AltRight') {
+        setIsRecording(false);
+        setLiveModifiers([]);
+        applyHotkey('RightOption');
+        return;
+      }
+
       // Track active modifier keys for live display
       const mods: string[] = [];
       if (e.metaKey) mods.push('CommandOrControl');
@@ -90,7 +146,7 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
       if (e.shiftKey) mods.push('Shift');
       setLiveModifiers(mods);
 
-      // If only a modifier key is pressed, wait for the actual trigger key
+      // If only a modifier key is pressed, wait for the actual trigger key or native listener
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
         return;
       }
@@ -133,6 +189,11 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
   // Format accelerator for macOS display symbols
   const formatDisplayHotkey = (acc: string) => {
     if (!acc) return 'Not Set';
+    if (acc === 'LeftControl') return '⌃ Left Control';
+    if (acc === 'RightControl') return '⌃ Right Control';
+    if (acc === 'LeftOption') return '⌥ Left Option';
+    if (acc === 'RightOption') return '⌥ Right Option';
+    if (acc === 'Fn') return '🌐 Fn / Globe';
     return acc
       .replace(/CommandOrControl|Cmd/g, '⌘')
       .replace(/Alt|Option/g, '⌥')
@@ -142,11 +203,13 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
   };
 
   const presets = [
-    { label: '⌥ Space (Default)', value: 'Alt+Space', desc: 'Option + Space' },
+    { label: '⌃ Left Control', value: 'LeftControl', desc: 'Left Control key (Handy & Mac Dictation style)' },
+    { label: '⌥ Space', value: 'Alt+Space', desc: 'Option + Space (Default)' },
     { label: '⌃ Space', value: 'Control+Space', desc: 'Control + Space' },
     { label: '⌥ D', value: 'Alt+D', desc: 'Option + D' },
+    { label: '🌐 Fn / Globe', value: 'Fn', desc: 'Fn / Globe key' },
+    { label: '⌃ Right Control', value: 'RightControl', desc: 'Right Control key' },
     { label: '⌘ ⇧ Space', value: 'CommandOrControl+Shift+Space', desc: 'Cmd + Shift + Space' },
-    { label: '⌥ X', value: 'Alt+X', desc: 'Option + X' },
     { label: 'F8', value: 'F8', desc: 'F8 key' },
   ];
 
@@ -171,7 +234,7 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
             {isRecording
               ? liveModifiers.length > 0
                 ? `${formatDisplayHotkey(liveModifiers.join('+'))} ...`
-                : 'Press keys now...'
+                : 'Press any key or Left Control now...'
               : formatDisplayHotkey(preview)}
           </span>
         </div>
@@ -198,14 +261,14 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
           {showManual ? 'Hide Manual' : 'Type Manually'}
         </button>
 
-        {preview !== 'Alt+Space' && !isRecording && (
+        {preview !== 'LeftControl' && !isRecording && (
           <button
-            onClick={() => applyHotkey('Alt+Space')}
+            onClick={() => applyHotkey('LeftControl')}
             className="text-xs text-neutral-400 hover:text-neutral-200 flex items-center gap-1 py-1 px-2 rounded hover:bg-neutral-800 transition-colors"
-            title="Reset to default (⌥ Space)"
+            title="Set to Left Control (Handy default)"
           >
             <RefreshCw size={12} />
-            Reset to Default
+            Set to Left Control
           </button>
         )}
       </div>
@@ -218,7 +281,7 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
               type="text"
               value={manualText}
               onChange={(e) => setManualText(e.target.value)}
-              placeholder="e.g. Alt+Space or Control+Space"
+              placeholder="e.g. LeftControl or Alt+Space"
               className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-neutral-800 border border-neutral-700 focus:border-blue-500 focus:outline-none text-neutral-100 font-mono"
             />
             <button
@@ -229,7 +292,7 @@ export const HotkeyRecorder: React.FC<HotkeyRecorderProps> = ({ currentHotkey, o
             </button>
           </div>
           <p className="text-[11px] text-neutral-400">
-            Use standard names: <code className="text-neutral-300">Alt+Space</code>, <code className="text-neutral-300">Control+Space</code>, <code className="text-neutral-300">Alt+D</code>, <code className="text-neutral-300">CommandOrControl+Shift+Space</code>.
+            Use standard names: <code className="text-neutral-300">LeftControl</code>, <code className="text-neutral-300">RightControl</code>, <code className="text-neutral-300">Fn</code>, <code className="text-neutral-300">Alt+Space</code>, <code className="text-neutral-300">Control+Space</code>.
           </p>
         </div>
       )}

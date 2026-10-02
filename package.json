@@ -5,9 +5,10 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
+    "build:native": "mkdir -p bin && swiftc -O native/keylistener.swift -o bin/keylistener",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
-    "build": "npm run build:renderer && npm run build:electron",
+    "build": "npm run build:native && npm run build:renderer && npm run build:electron",
     "start": "npm run build && electron .",
     "dev:electron": "electron .",
     "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
@@ -69,6 +70,12 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin"
+      }
     ]
   }
 }

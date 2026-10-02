@@ -73,7 +73,7 @@ Output ONLY the formatted technical text with no conversational intro.`,
 ];
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  hotkey: 'Alt+Space',
+  hotkey: 'LeftControl',
   hotkeyMode: 'toggle',
   autoPaste: true,
   copyToClipboard: true,

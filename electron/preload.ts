@@ -8,6 +8,13 @@ export const electronAPI = {
     ipcRenderer.invoke('update-settings', settings),
   setHotkey: (hotkey: string): Promise<{ success: boolean; error?: string; hotkey?: string; settings?: AppSettings }> =>
     ipcRenderer.invoke('set-hotkey', hotkey),
+  startRecordingHotkey: () => ipcRenderer.send('start-recording-hotkey'),
+  stopRecordingHotkey: () => ipcRenderer.send('stop-recording-hotkey'),
+  onNativeKeyRecorded: (callback: (data: { key: string; display: string; isModifier: boolean }) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('native-key-recorded', handler);
+    return () => ipcRenderer.removeListener('native-key-recorded', handler);
+  },
 
   // Connection testing
   testProvider: (provider: string): Promise<{ success: boolean; message: string }> =>
