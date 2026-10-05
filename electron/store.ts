@@ -148,7 +148,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     baseUrl: 'https://ai-gateway.vercel.sh/v1',
     apiKey: '',
     sttModel: 'microsoft/mai-transcribe-2',
-    llmModel: 'openai/gpt-4o-mini'
+    llmModel: 'openai/gpt-4o'
   },
   groq: {
     apiKey: '',
