@@ -3,8 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
-import { exec, spawn, ChildProcess } from 'child_process';
-import { AppStore } from './store';
+import { exec, execFile, spawn, ChildProcess } from 'child_process';
+import { AppStore, cleanSpeechLocally } from './store';
 import { TextInjector } from './injector';
 import { loadEnvFiles } from './env';
 import { transcribeAudio, sttProviderConfigured, STTResult } from './providers/stt';
@@ -70,6 +70,11 @@ function updateTrayMenu() {
   const settings = store.getSettings();
   const activePreset = settings.presets.find(p => p.id === settings.activePresetId) || settings.presets[0];
 
+  const usage = store.getUsageStats();
+  const usageDisplay = usage.totalMinutes >= 1
+    ? `${usage.totalMinutes}m (${usage.totalDictations} dictations)`
+    : `${usage.totalSeconds}s (${usage.totalDictations} dictations)`;
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: isRecording ? '⏹ Stop Dictation' : '🎙 Start Dictation',
@@ -99,6 +104,22 @@ function updateTrayMenu() {
       label: '📜 Dictation History...',
       accelerator: 'CommandOrControl+H',
       click: () => openSettingsWindow('history'),
+    },
+    {
+      label: `⏱ Usage: ${usageDisplay}`,
+      click: () => openSettingsWindow('history'),
+    },
+    {
+      label: '🚀 Open at Login',
+      type: 'checkbox',
+      checked: settings.openAtLogin ?? true,
+      click: (item) => {
+        const nextState = item.checked;
+        store.updateSettings({ openAtLogin: nextState });
+        setLaunchAtLogin(nextState);
+        updateTrayMenu();
+        settingsWindow?.webContents.send('settings-changed', store.getSettings());
+      },
     },
     { type: 'separator' },
     {
@@ -280,6 +301,56 @@ const MODIFIER_HOTKEYS = [
 function isModifierHotkey(hotkey: string): boolean {
   if (!hotkey) return false;
   return MODIFIER_HOTKEYS.some(m => m.toLowerCase() === hotkey.toLowerCase().trim());
+}
+
+function getAppBundlePath(): string {
+  if (app.isPackaged) {
+    return path.resolve(process.resourcesPath, '../../');
+  }
+  if (fs.existsSync('/Applications/OpenHandy.app')) {
+    return '/Applications/OpenHandy.app';
+  }
+  const releasePath = path.join(__dirname, '../release/mac-arm64/OpenHandy.app');
+  if (fs.existsSync(releasePath)) {
+    return releasePath;
+  }
+  return '';
+}
+
+function setLaunchAtLogin(enabled: boolean) {
+  const isMac = process.platform === 'darwin';
+
+  try {
+    const bundlePath = getAppBundlePath();
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      openAsHidden: isMac,
+      ...(bundlePath && !app.isPackaged ? { path: bundlePath } : {}),
+    });
+  } catch (err) {
+    console.warn('app.setLoginItemSettings failed:', err);
+  }
+
+  if (isMac) {
+    try {
+      const bundlePath = getAppBundlePath();
+      if (enabled) {
+        if (bundlePath && fs.existsSync(bundlePath)) {
+          const script = `tell application "System Events"\nif not (exists (login item "OpenHandy")) then\nmake new login item at end with properties {path:"${bundlePath}", hidden:false, name:"OpenHandy"}\nend if\nend tell`;
+          execFile('osascript', ['-e', script], (err) => {
+            if (err) console.warn('Could not add login item via AppleScript:', err.message);
+          });
+        }
+      } else {
+        const script = `tell application "System Events"\nif exists (login item "OpenHandy") then\ndelete (every login item whose name is "OpenHandy")\nend if\nend tell`;
+        execFile('osascript', ['-e', script], (err) => {
+          if (err) console.warn('Could not remove login item via AppleScript:', err.message);
+        });
+      }
+    } catch (err) {
+      console.warn('macOS login item sync failed:', err);
+    }
+  }
 }
 
 function getHelperPath(name: string): string {
@@ -642,6 +713,9 @@ function setupIPCHandlers() {
     if (partial.hotkey || partial.hotkeyMode) {
       registerGlobalHotkey(updated.hotkey);
     }
+    if (typeof partial.openAtLogin === 'boolean') {
+      setLaunchAtLogin(partial.openAtLogin);
+    }
     updateTrayMenu();
     return updated;
   });
@@ -682,8 +756,21 @@ function setupIPCHandlers() {
   });
 
   ipcMain.handle('get-history', () => store.getHistory());
-  ipcMain.handle('clear-history', () => store.clearHistory());
-  ipcMain.handle('delete-history-record', (_event, id) => store.deleteHistoryRecord(id));
+  ipcMain.handle('clear-history', () => {
+    store.clearHistory();
+    updateTrayMenu();
+  });
+  ipcMain.handle('delete-history-record', (_event, id) => {
+    store.deleteHistoryRecord(id);
+    updateTrayMenu();
+  });
+
+  ipcMain.handle('get-usage-stats', () => store.getUsageStats());
+  ipcMain.handle('reset-usage-stats', () => {
+    const updated = store.resetUsageStats();
+    updateTrayMenu();
+    return updated;
+  });
 
   ipcMain.handle('check-accessibility', () => injector.checkAccessibilityPermission());
   ipcMain.handle('open-accessibility-settings', () => injector.openAccessibilitySettings());
@@ -752,19 +839,30 @@ function setupIPCHandlers() {
         return;
       }
 
-      // 2. LLM Post-Processing stage (optional)
+      // 2. Post-Processing stage (LLM or fast local cleanup)
       let finalText = rawTranscript;
       const activePreset = settings.presets.find(p => p.id === settings.activePresetId) || settings.presets[0];
 
-      if (settings.activeLlmProvider !== 'none' && activePreset && activePreset.id !== 'raw') {
-        setHUDState({
-          status: 'polishing',
-          providerName: settings.activeLlmProvider.toUpperCase(),
-          presetName: activePreset.name,
-        });
+      if (activePreset && activePreset.id !== 'raw') {
+        if (settings.activeLlmProvider !== 'none') {
+          setHUDState({
+            status: 'polishing',
+            providerName: settings.activeLlmProvider.toUpperCase(),
+            presetName: activePreset.name,
+          });
 
-        const llmResult = await processWithLLM(rawTranscript, activePreset, settings);
-        finalText = llmResult.text.trim();
+          try {
+            const llmResult = await processWithLLM(rawTranscript, activePreset, settings);
+            const polished = llmResult.text.trim();
+            finalText = polished || cleanSpeechLocally(rawTranscript);
+          } catch (llmErr) {
+            console.warn('LLM post-processing failed, falling back to local speech cleanup:', llmErr);
+            finalText = cleanSpeechLocally(rawTranscript);
+          }
+        } else {
+          // Fast deterministic local cleanup (removes ums, uhs, stutters) when no LLM is enabled
+          finalText = cleanSpeechLocally(rawTranscript);
+        }
       }
 
       // 3. Inject text (Auto-paste and/or clipboard copy)
@@ -809,7 +907,9 @@ function setupIPCHandlers() {
       // Notify settings window if open
       if (settingsWindow) {
         settingsWindow.webContents.send('history-updated', record);
+        settingsWindow.webContents.send('usage-updated', store.getUsageStats());
       }
+      updateTrayMenu();
 
       // 5. Visual HUD feedback
       const preview = finalText.length > 35 ? finalText.slice(0, 35) + '...' : finalText;
@@ -868,8 +968,11 @@ app.whenReady().then(() => {
   registerGlobalHotkey();
   initNativeKeyListener();
 
-  // If user hasn't configured any API key yet, open settings on first launch
+  // Synchronize Launch at Login with OS
   const settings = store.getSettings();
+  setLaunchAtLogin(settings.openAtLogin ?? true);
+
+  // If user hasn't configured any API key yet, open settings on first launch
   const hasAnyKey = Boolean(
     settings.azure.apiKey ||
     settings.groq.apiKey ||

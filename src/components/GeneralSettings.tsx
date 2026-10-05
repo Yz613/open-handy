@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Keyboard, Shield, Volume2, Clipboard, ArrowDownToLine, ExternalLink, Check, AlertTriangle, Code2, FolderOpen } from 'lucide-react';
-import { AppSettings } from '../../electron/providers/types';
+import { Keyboard, Shield, Volume2, Clipboard, ArrowDownToLine, ExternalLink, Check, AlertTriangle, Code2, FolderOpen, Rocket } from 'lucide-react';
+import { AppSettings, UsageStats } from '../../electron/providers/types';
 import { HotkeyRecorder } from './HotkeyRecorder';
+import { UsageMeter } from './UsageMeter';
 
 interface GeneralSettingsProps {
   settings: AppSettings;
@@ -10,6 +11,7 @@ interface GeneralSettingsProps {
 
 export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUpdate }) => {
   const [hasAccessibility, setHasAccessibility] = useState<boolean | null>(null);
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
 
   const checkPerms = async () => {
     try {
@@ -23,7 +25,19 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUp
   useEffect(() => {
     checkPerms();
     const interval = setInterval(checkPerms, 3000);
-    return () => clearInterval(interval);
+
+    window.electronAPI.getUsageStats?.().then((stats) => {
+      setUsageStats(stats);
+    });
+
+    const cleanupUsage = window.electronAPI.onUsageUpdated?.((stats) => {
+      setUsageStats(stats);
+    });
+
+    return () => {
+      clearInterval(interval);
+      cleanupUsage?.();
+    };
   }, []);
 
   return (
@@ -145,7 +159,43 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUp
         </div>
       </div>
 
-      {/* 3. macOS Accessibility Permissions */}
+      {/* 3. Launch & Startup */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center gap-2.5">
+          <Rocket size={18} className="text-cyan-400" />
+          <div>
+            <h3 className="font-semibold text-sm text-neutral-100">Launch & Startup</h3>
+            <p className="text-xs text-neutral-400">Configure how OpenHandy starts on your Mac.</p>
+          </div>
+        </div>
+
+        <div className="space-y-3 pt-1">
+          <div className="flex items-center justify-between p-3 rounded-lg bg-neutral-800/40 border border-neutral-800">
+            <div>
+              <span className="font-medium text-xs text-neutral-200">Open at Login</span>
+              <p className="text-[11px] text-neutral-400">
+                Automatically start OpenHandy in the background when your Mac turns on or logs in.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.openAtLogin ?? true}
+                onChange={(e) => onUpdate({ openAtLogin: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* Usage Meter Quick Overview */}
+      {usageStats && (
+        <UsageMeter stats={usageStats} compact={true} />
+      )}
+
+      {/* 4. macOS Accessibility Permissions */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -180,7 +230,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({ settings, onUp
         )}
       </div>
 
-      {/* 4. Project Source & Editing */}
+      {/* 5. Project Source & Editing */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">

@@ -228,7 +228,7 @@ export const ProviderConfig: React.FC<ProviderConfigProps> = ({ settings, onUpda
             <label className="block text-neutral-400 mb-1">LLM Model</label>
             <input
               type="text"
-              placeholder="openai/gpt-4o"
+              placeholder="openai/gpt-4o-mini"
               value={settings.vercel.llmModel}
               onChange={(e) =>
                 onUpdate({ vercel: { ...settings.vercel, llmModel: e.target.value } })

@@ -1,24 +1,52 @@
 import React, { useEffect, useState } from 'react';
 import { Search, Copy, Check, Trash2, Clock, FileText, ArrowRight } from 'lucide-react';
-import { DictationRecord } from '../../electron/providers/types';
+import { DictationRecord, UsageStats } from '../../electron/providers/types';
+import { UsageMeter } from './UsageMeter';
 
 export const HistoryView: React.FC = () => {
   const [history, setHistory] = useState<DictationRecord[]>([]);
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const loadHistory = async () => {
+  const loadData = async () => {
     try {
-      const records = await window.electronAPI.getHistory();
+      const [records, stats] = await Promise.all([
+        window.electronAPI.getHistory(),
+        window.electronAPI.getUsageStats(),
+      ]);
       setHistory(records);
+      setUsageStats(stats);
     } catch (e) {
-      console.error('Failed to load history:', e);
+      console.error('Failed to load history or usage:', e);
     }
   };
 
   useEffect(() => {
-    loadHistory();
+    loadData();
+
+    const cleanupUsage = window.electronAPI.onUsageUpdated?.((stats) => {
+      setUsageStats(stats);
+    });
+
+    const cleanupHist = window.electronAPI.onHistoryUpdated?.((record) => {
+      setHistory((prev) => [record, ...prev]);
+    });
+
+    return () => {
+      cleanupUsage?.();
+      cleanupHist?.();
+    };
   }, []);
+
+  const handleResetUsage = async () => {
+    try {
+      const updated = await window.electronAPI.resetUsageStats();
+      setUsageStats(updated);
+    } catch (e) {
+      console.error('Failed to reset usage:', e);
+    }
+  };
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -59,7 +87,12 @@ export const HistoryView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* Usage Meter */}
+      {usageStats && (
+        <UsageMeter stats={usageStats} onReset={handleResetUsage} />
+      )}
+
       {/* Header and Search */}
       <div className="flex items-center justify-between gap-4">
         <div className="relative flex-1">

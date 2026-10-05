@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { AppSettings, HUDState, DictationRecord } from './providers/types';
+import { AppSettings, HUDState, DictationRecord, UsageStats } from './providers/types';
 
 export const electronAPI = {
   // Settings
@@ -24,6 +24,10 @@ export const electronAPI = {
   getHistory: (): Promise<DictationRecord[]> => ipcRenderer.invoke('get-history'),
   clearHistory: (): Promise<void> => ipcRenderer.invoke('clear-history'),
   deleteHistoryRecord: (id: string): Promise<void> => ipcRenderer.invoke('delete-history-record', id),
+
+  // Usage stats
+  getUsageStats: (): Promise<UsageStats> => ipcRenderer.invoke('get-usage-stats'),
+  resetUsageStats: (): Promise<UsageStats> => ipcRenderer.invoke('reset-usage-stats'),
 
   // Accessibility
   checkAccessibility: (): Promise<boolean> => ipcRenderer.invoke('check-accessibility'),
@@ -79,6 +83,30 @@ export const electronAPI = {
     const handler = (_event: any, level: number) => callback(level);
     ipcRenderer.on('audio-level-update', handler);
     return () => ipcRenderer.removeListener('audio-level-update', handler);
+  },
+
+  onSettingsChanged: (callback: (settings: AppSettings) => void) => {
+    const handler = (_event: any, s: AppSettings) => callback(s);
+    ipcRenderer.on('settings-changed', handler);
+    return () => ipcRenderer.removeListener('settings-changed', handler);
+  },
+
+  onSwitchTab: (callback: (tab: string) => void) => {
+    const handler = (_event: any, tab: string) => callback(tab);
+    ipcRenderer.on('switch-tab', handler);
+    return () => ipcRenderer.removeListener('switch-tab', handler);
+  },
+
+  onUsageUpdated: (callback: (stats: UsageStats) => void) => {
+    const handler = (_event: any, stats: UsageStats) => callback(stats);
+    ipcRenderer.on('usage-updated', handler);
+    return () => ipcRenderer.removeListener('usage-updated', handler);
+  },
+
+  onHistoryUpdated: (callback: (record: DictationRecord) => void) => {
+    const handler = (_event: any, record: DictationRecord) => callback(record);
+    ipcRenderer.on('history-updated', handler);
+    return () => ipcRenderer.removeListener('history-updated', handler);
   },
 };
 

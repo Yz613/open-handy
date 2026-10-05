@@ -9,8 +9,9 @@ import {
   Save,
   Check,
   Zap,
+  Gauge,
 } from 'lucide-react';
-import { AppSettings, DEFAULT_SETTINGS } from '../../electron/providers/types';
+import { AppSettings, DEFAULT_SETTINGS, UsageStats } from '../../electron/providers/types';
 import { GeneralSettings } from './GeneralSettings';
 import { ProviderConfig } from './ProviderConfig';
 import { PipelineConfig } from './PipelineConfig';
@@ -19,6 +20,7 @@ import { HistoryView } from './HistoryView';
 
 export const Settings: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
   const [activeTab, setActiveTab] = useState<'general' | 'providers' | 'pipeline' | 'prompts' | 'history'>('general');
   const [savedBadge, setSavedBadge] = useState(false);
 
@@ -29,10 +31,30 @@ export const Settings: React.FC = () => {
       setSettings(s);
     });
 
+    window.electronAPI.getUsageStats?.().then((stats) => {
+      setUsageStats(stats);
+    });
+
     // Listen for tab switch requests from Tray menu
-    (window as any).ipcRenderer?.on?.('switch-tab', (_event: any, tab: any) => {
+    const cleanupTab = window.electronAPI.onSwitchTab?.((tab: any) => {
       if (tab) setActiveTab(tab);
     });
+
+    // Listen for settings changes from Tray or other windows
+    const cleanupSettings = window.electronAPI.onSettingsChanged?.((s: AppSettings) => {
+      setSettings(s);
+    });
+
+    // Listen for usage stats updates
+    const cleanupUsage = window.electronAPI.onUsageUpdated?.((stats: UsageStats) => {
+      setUsageStats(stats);
+    });
+
+    return () => {
+      cleanupTab?.();
+      cleanupSettings?.();
+      cleanupUsage?.();
+    };
   }, []);
 
   const handleUpdate = async (partial: Partial<AppSettings>) => {
@@ -99,13 +121,46 @@ export const Settings: React.FC = () => {
         </div>
 
         {/* Footer info & saved indicator */}
-        <div className="px-3 py-2 border-t border-neutral-800/80 flex items-center justify-between text-[11px] text-neutral-500">
-          <span>v1.0.0</span>
-          {savedBadge && (
-            <span className="flex items-center gap-1 text-emerald-400 font-medium animate-fade-in">
-              <Check size={12} /> Saved
-            </span>
+        <div className="space-y-2">
+          {usageStats && (
+            <button
+              onClick={() => setActiveTab('history')}
+              className="w-full text-left p-2.5 rounded-xl bg-neutral-950/60 border border-neutral-800/80 hover:border-neutral-700 hover:bg-neutral-800/40 transition-all group cursor-pointer"
+              title="Click to view full transcription usage and history"
+            >
+              <div className="flex items-center justify-between text-[11px] mb-1.5">
+                <span className="text-neutral-400 group-hover:text-neutral-200 font-medium flex items-center gap-1.5 transition-colors">
+                  <Gauge size={13} className="text-cyan-400" /> Usage
+                </span>
+                <span className="font-mono text-cyan-300 font-bold text-[11px]">
+                  {usageStats.totalMinutes >= 1
+                    ? `${usageStats.totalMinutes}m`
+                    : `${usageStats.totalSeconds}s`}
+                </span>
+              </div>
+              <div className="w-full bg-neutral-800 h-1.5 rounded-full overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${Math.min(100, Math.max(8, (usageStats.totalSeconds / 600) * 100))}%`
+                  }}
+                />
+              </div>
+              <div className="mt-1.5 flex justify-between text-[10px] text-neutral-500">
+                <span>{usageStats.totalDictations} dictations</span>
+                <span>{usageStats.totalWords.toLocaleString()} words</span>
+              </div>
+            </button>
           )}
+
+          <div className="px-2 py-1.5 border-t border-neutral-800/80 flex items-center justify-between text-[11px] text-neutral-500">
+            <span>v1.0.0</span>
+            {savedBadge && (
+              <span className="flex items-center gap-1 text-emerald-400 font-medium animate-fade-in">
+                <Check size={12} /> Saved
+              </span>
+            )}
+          </div>
         </div>
       </aside>
 

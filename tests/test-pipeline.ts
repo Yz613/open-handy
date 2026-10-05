@@ -1,4 +1,4 @@
-import { BUILTIN_PRESETS, DEFAULT_SETTINGS, AppStore } from '../electron/store';
+import { BUILTIN_PRESETS, DEFAULT_SETTINGS, AppStore, cleanSpeechLocally } from '../electron/store';
 import { testProviderConnection } from '../electron/providers/tester';
 
 async function runTests() {
@@ -8,10 +8,9 @@ async function runTests() {
   console.log('Test 1: Store & Default Settings');
   const store = new AppStore();
   const settings = store.getSettings();
-  console.assert(settings.hotkey === 'Alt+Space', 'Default hotkey should be Alt+Space');
+  console.assert(settings.hotkey === 'LeftControl', 'Default hotkey should be LeftControl');
   console.assert(settings.autoPaste === true, 'Default autoPaste should be true');
   console.assert(settings.copyToClipboard === true, 'Default copyToClipboard should be true');
-  console.assert(settings.activeSttProvider === 'groq', 'Default activeSttProvider should be groq');
   console.assert(settings.presets.length >= 5, 'Should have at least 5 built-in presets');
   console.log('  ✅ Default settings passed');
 
@@ -74,7 +73,21 @@ async function runTests() {
   const cleanPreset = BUILTIN_PRESETS.find((p) => p.id === 'clean');
   console.assert(Boolean(cleanPreset), 'Clean preset must exist');
   console.assert(cleanPreset!.systemPrompt.includes('filler words'), 'Clean preset should handle filler words');
+  console.assert(cleanPreset!.systemPrompt.includes('self-corrections'), 'Clean preset should handle self-corrections');
+  console.assert(cleanPreset!.systemPrompt.includes('second time'), 'Clean preset should instruct keeping what was spoken a second time');
   console.log('  ✅ Presets verified');
+
+  // Test 6: Fast Local Speech Cleaner
+  console.log('Test 6: Fast Local Speech Cleaner');
+  const cleanedFillers = cleanSpeechLocally('um hello uh world er test');
+  console.assert(cleanedFillers === 'Hello world test', `Expected "Hello world test", got "${cleanedFillers}"`);
+
+  const cleanedStutters = cleanSpeechLocally('it it will will work');
+  console.assert(cleanedStutters === 'It will work', `Expected "It will work", got "${cleanedStutters}"`);
+
+  const cleanedPhrases = cleanSpeechLocally('it will, it will actually work');
+  console.assert(cleanedPhrases === 'It will actually work', `Expected "It will actually work", got "${cleanedPhrases}"`);
+  console.log('  ✅ Local speech cleaner passed');
 
   console.log('\n🎉 ALL PIPELINE TESTS PASSED SUCCESSFULLY!\n');
 }

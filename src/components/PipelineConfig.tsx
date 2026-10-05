@@ -20,10 +20,10 @@ export const PipelineConfig: React.FC<PipelineConfigProps> = ({ settings, onUpda
   ];
 
   const llmProviders: { id: LLMProviderId; name: string; desc: string }[] = [
-    { id: 'none', name: 'None (Raw Transcript Only)', desc: 'Directly output transcribed speech without AI modification' },
+    { id: 'none', name: 'Local Fast Cleanup (No LLM)', desc: 'Instant local removal of filler words (um, uh) and duplicate words without external API calls' },
+    { id: 'vercel', name: 'Vercel AI Gateway (Recommended)', desc: 'Smart cleanup via gpt-4o-mini: handles self-corrections, restarts & filler words' },
+    { id: 'groq', name: 'Groq Llama 3.3 (Near-Instant)', desc: 'Sub-second AI cleanup and rewriting with Llama 3.3 70B' },
     { id: 'azure', name: 'Microsoft Azure OpenAI', desc: 'Azure GPT-4o / GPT-4o-mini' },
-    { id: 'vercel', name: 'Vercel AI Gateway', desc: 'Vercel routed models (e.g. openai/gpt-4o)' },
-    { id: 'groq', name: 'Groq Llama 3.3', desc: 'Near-instant text cleanup with Llama 3.3 70B' },
     { id: 'openai', name: 'OpenAI GPT-4o', desc: 'GPT-4o / GPT-4o-mini' },
     { id: 'anthropic', name: 'Anthropic Claude', desc: 'Claude 3.5 Sonnet / Claude 3.5 Haiku' },
     { id: 'gemini', name: 'Google Gemini', desc: 'Gemini 2.0 Flash' },

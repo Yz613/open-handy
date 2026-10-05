@@ -105,7 +105,7 @@ async function processWithVercel(
 
   const cleanBase = normalizeVercelBaseUrl(baseUrl);
   const url = `${cleanBase}/chat/completions`;
-  const model = llmModel || 'openai/gpt-4o';
+  const model = llmModel || 'openai/gpt-4o-mini';
 
   const response = await fetch(url, {
     method: 'POST',
@@ -119,7 +119,7 @@ async function processWithVercel(
         { role: 'system', content: preset.systemPrompt },
         { role: 'user', content: rawTranscript },
       ],
-      temperature: 0.3,
+      temperature: 0.2,
     }),
   });
 

@@ -79,6 +79,7 @@ export interface AppSettings {
   autoPaste: boolean;                   // Default: true (Cmd+V into the focused app)
   copyToClipboard: boolean;             // Default: true (can be toggled OFF)
   soundEffects: boolean;                // Default: true
+  openAtLogin: boolean;                 // Default: true (launch on macOS startup / login)
   activePresetId: string;               // e.g. "clean"
   activeSttProvider: STTProviderId;
   activeLlmProvider: LLMProviderId;
@@ -123,3 +124,22 @@ export type HUDState =
   | { status: 'pasted'; previewText: string }
   | { status: 'copied'; previewText: string }
   | { status: 'error'; message: string };
+
+export interface ProviderUsage {
+  seconds: number;
+  dictations: number;
+  words: number;
+}
+
+export interface UsageStats {
+  totalSeconds: number;
+  totalMinutes: number;
+  totalHours: number;
+  totalDictations: number;
+  totalWords: number;
+  totalCharacters: number;
+  estimatedTypingMinutesSaved: number;
+  byProvider: Record<string, ProviderUsage>;
+  lastDictationTimestamp?: number;
+}
+
