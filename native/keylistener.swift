@@ -1,5 +1,4 @@
 import Cocoa
-import CoreAudio
 import Foundation
 
 struct StdinMessage: Codable {
@@ -56,13 +55,6 @@ class KeyListenerService {
     var endOnRelease = false
     var armWork: DispatchWorkItem?
 
-    var audioHoldEngaged = false
-    var audioSentMediaKey = false
-    var audioHadMute = false
-    var audioPreviousMute: UInt32 = 0
-    var audioHadVolume = false
-    var audioPreviousVolume: Float32 = 1
-    var audioGeneration = 0
     var focusedElement: AXUIElement?
     var focusedPid: pid_t = 0
     var pasteInFlight = false
@@ -151,7 +143,6 @@ class KeyListenerService {
             return
         }
         endOnRelease = false
-        pauseAudioForHold()
         // Modifier holds start immediately. A delayed arm was cancelled by the extra
         // keyDown macOS emits alongside Control, so the hold never began.
         if mode == "pushToTalk" || spec.singleModifier != nil {
@@ -166,7 +157,6 @@ class KeyListenerService {
         armWork = nil
         let duration = Date().timeIntervalSince1970 - keyDownTime
         isKeyDown = false
-        scheduleAudioResume()
 
         if otherKeyPressed {
             if endOnRelease {
@@ -236,158 +226,6 @@ class KeyListenerService {
         } else if !down && isKeyDown {
             handlePressEnded()
         }
-    }
-
-    func pauseAudioForHold() {
-        if audioHoldEngaged { return }
-        let device = defaultOutputDevice()
-        guard device != 0, outputDeviceIsRunning(device) else { return }
-
-        audioGeneration += 1
-        audioHoldEngaged = true
-        if let mute = readMute(device) {
-            audioHadMute = true
-            audioPreviousMute = mute
-            if mute == 0 {
-                writeMute(device, 1)
-            }
-        }
-        if let volume = readVolume(device) {
-            audioHadVolume = true
-            audioPreviousVolume = volume
-            writeVolume(device, 0)
-        }
-        sendPlayPauseKey()
-        audioSentMediaKey = true
-    }
-
-    func scheduleAudioResume() {
-        let generation = audioGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
-            guard let self = self else { return }
-            if self.isKeyDown || self.audioGeneration != generation { return }
-            self.resumeAudioAfterHold()
-        }
-    }
-
-    func resumeAudioAfterHold() {
-        guard audioHoldEngaged else { return }
-        let device = defaultOutputDevice()
-        if audioSentMediaKey {
-            sendPlayPauseKey()
-        }
-        if device != 0 {
-            if audioHadVolume {
-                writeVolume(device, audioPreviousVolume)
-            }
-            if audioHadMute {
-                writeMute(device, audioPreviousMute)
-            }
-        }
-        audioHoldEngaged = false
-        audioSentMediaKey = false
-        audioHadMute = false
-        audioHadVolume = false
-    }
-
-    func defaultOutputDevice() -> AudioDeviceID {
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &size,
-            &deviceID
-        )
-        return status == noErr ? deviceID : 0
-    }
-
-    func outputDeviceIsRunning(_ device: AudioDeviceID) -> Bool {
-        var running: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &running)
-        return status == noErr && running != 0
-    }
-
-    func readMute(_ device: AudioDeviceID) -> UInt32? {
-        var mute: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &mute)
-        return status == noErr ? mute : nil
-    }
-
-    func writeMute(_ device: AudioDeviceID, _ mute: UInt32) {
-        var value = mute
-        let size = UInt32(MemoryLayout<UInt32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
-    }
-
-    func readVolume(_ device: AudioDeviceID) -> Float32? {
-        var volume: Float32 = 1
-        var size = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &volume)
-        return status == noErr ? volume : nil
-    }
-
-    func writeVolume(_ device: AudioDeviceID, _ volume: Float32) {
-        var value = volume
-        let size = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectSetPropertyData(device, &address, 0, nil, size, &value)
-    }
-
-    func sendPlayPauseKey() {
-        let key: Int = 16 // NX_KEYTYPE_PLAY
-        func post(_ down: Bool) {
-            let flag: UInt = down ? 0xA00 : 0xB00
-            let data1 = (key << 16) | ((down ? 0xA : 0xB) << 8)
-            guard let event = NSEvent.otherEvent(
-                with: .systemDefined,
-                location: .zero,
-                modifierFlags: NSEvent.ModifierFlags(rawValue: flag),
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                subtype: 8,
-                data1: data1,
-                data2: -1
-            ) else { return }
-            event.cgEvent?.post(tap: .cghidEventTap)
-        }
-        post(true)
-        usleep(30_000)
-        post(false)
     }
 
     func handleEvent(type: CGEventType, event: CGEvent) {

@@ -14,7 +14,8 @@
     "package:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir",
     "dist:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
     "deploy:worker": "cd worker && npx wrangler deploy",
-    "test:pipeline": "bun run tests/test-pipeline.ts"
+    "test": "npx ts-node tests/test-pipeline.ts",
+    "test:pipeline": "npx ts-node tests/test-pipeline.ts"
   },
   "keywords": [
     "speech-to-text",
