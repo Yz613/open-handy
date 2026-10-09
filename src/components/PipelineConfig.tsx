@@ -20,7 +20,7 @@ export const PipelineConfig: React.FC<PipelineConfigProps> = ({ settings, onUpda
   ];
 
   const llmProviders: { id: LLMProviderId; name: string; desc: string }[] = [
-    { id: 'none', name: 'None (Direct Transcription / Local Cleanup)', desc: 'Directly output transcribed speech (Microsoft MAI) with optional local filler cleanup' },
+    { id: 'none', name: 'On-Device Speech Polisher (Fast & Private)', desc: 'Instant local AI cleanup of filler words (um, uh, you know), stutters, and smart list formatting without external API calls' },
     { id: 'vercel', name: 'Vercel AI Gateway', desc: 'Vercel routed models (e.g. openai/gpt-4o)' },
     { id: 'groq', name: 'Groq Llama 3.3 (Near-Instant)', desc: 'Sub-second AI cleanup and rewriting with Llama 3.3 70B' },
     { id: 'azure', name: 'Microsoft Azure OpenAI', desc: 'Azure GPT-4o / GPT-4o-mini' },
