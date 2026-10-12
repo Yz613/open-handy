@@ -16,6 +16,8 @@ async function runTests() {
 
   // Test 2: Settings updates
   console.log('Test 2: Settings updates');
+  const origClip = settings.copyToClipboard;
+  const origStt = settings.activeSttProvider;
   const updated = store.updateSettings({
     copyToClipboard: false,
     activeSttProvider: 'azure',
@@ -24,10 +26,10 @@ async function runTests() {
   console.assert(updated.activeSttProvider === 'azure', 'activeSttProvider should be updated to azure');
   console.log('  ✅ Settings update passed');
 
-  // Reset back to defaults for clean state
+  // Restore user settings
   store.updateSettings({
-    copyToClipboard: true,
-    activeSttProvider: 'groq',
+    copyToClipboard: origClip,
+    activeSttProvider: origStt,
   });
 
   // Test 3: History management

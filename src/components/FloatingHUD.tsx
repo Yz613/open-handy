@@ -27,10 +27,15 @@ export const FloatingHUD: React.FC = () => {
     if (!window.electronAPI) return;
 
     // Initialize recorder
-    recorderRef.current = new AudioRecorder((level) => {
-      setAudioLevel(level);
-      window.electronAPI.sendAudioLevel(level);
-    });
+    recorderRef.current = new AudioRecorder(
+      (level) => {
+        setAudioLevel(level);
+        window.electronAPI.sendAudioLevel(level);
+      },
+      (pcm16) => {
+        window.electronAPI.sendLiveAudioChunk?.(pcm16);
+      }
+    );
 
     const enqueue = (job: () => Promise<void>) => {
       opRef.current = opRef.current.then(job).catch((err) => {

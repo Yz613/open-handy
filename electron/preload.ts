@@ -41,6 +41,10 @@ export const electronAPI = {
   sendAudioChunk: (arrayBuffer: ArrayBuffer, mimeType: string, durationSeconds: number): Promise<void> =>
     ipcRenderer.invoke('process-audio', arrayBuffer, mimeType, durationSeconds),
 
+  sendLiveAudioChunk: (pcm16Buffer: ArrayBuffer) => {
+    ipcRenderer.send('stream-audio-chunk', pcm16Buffer);
+  },
+
   sendAudioLevel: (level: number) => {
     ipcRenderer.send('audio-level', level);
   },

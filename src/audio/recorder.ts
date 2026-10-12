@@ -1,3 +1,5 @@
+const TARGET_SAMPLE_RATE = 16000;
+
 export class AudioRecorder {
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -7,12 +9,17 @@ export class AudioRecorder {
   private animFrameId: number | null = null;
   private chunks: Float32Array[] = [];
   private startTime = 0;
-  private sampleRate = 48000;
+  private sampleRate = TARGET_SAMPLE_RATE;
   private active = false;
   private onLevelUpdate?: (level: number) => void;
+  private onPcmChunk?: (pcm16: ArrayBuffer) => void;
 
-  constructor(onLevelUpdate?: (level: number) => void) {
+  constructor(
+    onLevelUpdate?: (level: number) => void,
+    onPcmChunk?: (pcm16: ArrayBuffer) => void
+  ) {
     this.onLevelUpdate = onLevelUpdate;
+    this.onPcmChunk = onPcmChunk;
   }
 
   public isActive(): boolean {
@@ -26,6 +33,8 @@ export class AudioRecorder {
 
     this.mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        channelCount: 1,
+        sampleRate: TARGET_SAMPLE_RATE,
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
@@ -33,7 +42,11 @@ export class AudioRecorder {
     });
 
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.audioContext = new AudioCtx();
+    try {
+      this.audioContext = new AudioCtx({ sampleRate: TARGET_SAMPLE_RATE });
+    } catch {
+      this.audioContext = new AudioCtx();
+    }
     this.sampleRate = this.audioContext.sampleRate;
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
@@ -47,11 +60,19 @@ export class AudioRecorder {
 
     // ScriptProcessor only runs when connected to the destination.
     // A zero-gain node keeps the graph alive without playing the mic back.
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+    const bufferSize = this.sampleRate <= 16000 ? 2048 : 4096;
+    this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
     this.processor.onaudioprocess = (event) => {
       if (!this.active) return;
       const channel = event.inputBuffer.getChannelData(0);
-      this.chunks.push(new Float32Array(channel));
+      const resampled =
+        this.sampleRate === TARGET_SAMPLE_RATE
+          ? new Float32Array(channel)
+          : downsampleBuffer(channel, this.sampleRate, TARGET_SAMPLE_RATE);
+      this.chunks.push(resampled);
+      if (this.onPcmChunk && resampled.length > 0) {
+        this.onPcmChunk(floatTo16BitPCM(resampled));
+      }
     };
     this.mute = this.audioContext.createGain();
     this.mute.gain.value = 0;
@@ -68,7 +89,7 @@ export class AudioRecorder {
     const samples = this.mergeChunks();
     this.cleanup();
     return {
-      arrayBuffer: encodeWav(samples, this.sampleRate),
+      arrayBuffer: encodeWav(samples, TARGET_SAMPLE_RATE),
       mimeType: 'audio/wav',
       durationSeconds,
     };
@@ -128,6 +149,38 @@ export class AudioRecorder {
     }
     this.chunks = [];
   }
+}
+
+function downsampleBuffer(buffer: Float32Array, inputRate: number, outputRate: number): Float32Array {
+  if (outputRate >= inputRate) return new Float32Array(buffer);
+  const ratio = inputRate / outputRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      accum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+function floatTo16BitPCM(samples: Float32Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return buffer;
 }
 
 function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {

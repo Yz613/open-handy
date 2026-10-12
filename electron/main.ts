@@ -7,7 +7,7 @@ import { exec, execFile, spawn, ChildProcess } from 'child_process';
 import { AppStore, cleanSpeechLocally } from './store';
 import { TextInjector } from './injector';
 import { loadEnvFiles } from './env';
-import { transcribeAudio, sttProviderConfigured, STTResult } from './providers/stt';
+import { transcribeAudio, sttProviderConfigured, STTResult, createVercelLiveSession, VercelLiveTranscriptionSession } from './providers/stt';
 import { processWithLLM } from './providers/llm';
 import { testProviderConnection } from './providers/tester';
 import { HUDState, DictationRecord, AppSettings } from './providers/types';
@@ -35,6 +35,7 @@ let keylistenerFailures = 0;
 let pendingPaste: ((ok: boolean) => void) | null = null;
 let recordingToken = 0;
 let accessibilityWarned = false;
+let activeLiveSession: VercelLiveTranscriptionSession | null = null;
 
 // Ensure single instance lock so clicking the app in Applications focuses the existing instance
 const gotTheLock = app.requestSingleInstanceLock();
@@ -596,6 +597,12 @@ function startRecording(fromApp?: string, pid?: number, bundleId?: string) {
   isRecording = true;
   recordingToken += 1;
 
+  if (activeLiveSession) {
+    activeLiveSession.cancel();
+    activeLiveSession = null;
+  }
+  activeLiveSession = createVercelLiveSession(store.getSettings());
+
   if ((fromApp && fromApp.trim()) || (pid && pid > 0) || (bundleId && bundleId.trim())) {
     injector.setFrontmostApp(fromApp || null, pid, bundleId);
   } else {
@@ -643,6 +650,11 @@ function cancelRecording() {
   if (!isRecording) return;
   isRecording = false;
   recordingToken += 1;
+
+  if (activeLiveSession) {
+    activeLiveSession.cancel();
+    activeLiveSession = null;
+  }
 
   if (recordingTimer) {
     clearInterval(recordingTimer);
@@ -793,6 +805,10 @@ function setupIPCHandlers() {
     isRecording = false;
     hudWantsRecording = false;
     recordingToken += 1;
+    if (activeLiveSession) {
+      activeLiveSession.cancel();
+      activeLiveSession = null;
+    }
     if (recordingTimer) {
       clearInterval(recordingTimer);
       recordingTimer = null;
@@ -801,6 +817,13 @@ function setupIPCHandlers() {
     setHUDState({ status: 'error', message: text });
     setTimeout(() => setHUDState({ status: 'idle' }), 3200);
     updateTrayMenu();
+  });
+
+  // Live 16kHz PCM audio streaming from renderer for zero-wait WebSocket STT
+  ipcMain.on('stream-audio-chunk', (_event, pcm16Buffer: ArrayBuffer) => {
+    if (activeLiveSession && pcm16Buffer && pcm16Buffer.byteLength > 0) {
+      activeLiveSession.pushPcmChunk(Buffer.from(pcm16Buffer));
+    }
   });
 
   // Audio level streaming from renderer to HUD visualizer
@@ -814,8 +837,11 @@ function setupIPCHandlers() {
   ipcMain.handle('process-audio', async (_event, arrayBuffer: ArrayBuffer, mimeType: string, durationSeconds: number) => {
     const settings = store.getSettings();
     const audioBuffer = Buffer.from(arrayBuffer);
+    const liveSession = activeLiveSession;
+    activeLiveSession = null;
 
     if (audioBuffer.length < 1000) {
+      liveSession?.cancel();
       setHUDState({ status: 'error', message: 'Recording too short or empty.' });
       setTimeout(() => setHUDState({ status: 'idle' }), 2500);
       return;
@@ -825,11 +851,21 @@ function setupIPCHandlers() {
       // 1. Transcription stage
       let sttResult: STTResult;
       if (!sttProviderConfigured(settings)) {
+        liveSession?.cancel();
         setHUDState({ status: 'transcribing', providerName: 'this Mac' });
         sttResult = await transcribeLocally(audioBuffer);
       } else {
         setHUDState({ status: 'transcribing', providerName: settings.activeSttProvider.toUpperCase() });
-        sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
+        if (liveSession) {
+          try {
+            sttResult = await liveSession.finish(4500);
+          } catch (liveErr) {
+            console.warn('Live WebSocket transcription fallback to buffer:', liveErr);
+            sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
+          }
+        } else {
+          sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
+        }
       }
       const rawTranscript = sttResult.text.trim();
 
