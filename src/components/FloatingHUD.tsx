@@ -17,23 +17,42 @@ interface HUDState {
   message?: string;
 }
 
+const WAVE_WEIGHTS = [0.4, 0.7, 1, 0.8, 0.5];
+
+function waveHeights(level: number): number[] {
+  return WAVE_WEIGHTS.map((weight) => {
+    const scale = Math.max(0.2, Math.min(1, level * 2.2 * weight + 0.15));
+    return Math.round(scale * 18);
+  });
+}
+
 export const FloatingHUD: React.FC = () => {
   const [hudState, setHudState] = useState<HUDState>({ status: 'idle' });
-  const [audioLevel, setAudioLevel] = useState<number>(0);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const opRef = useRef<Promise<void>>(Promise.resolve());
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const heightsRef = useRef<number[]>(waveHeights(0));
 
   useEffect(() => {
     if (!window.electronAPI) return;
 
+    const applyLevel = (level: number) => {
+      const heights = waveHeights(level);
+      heightsRef.current = heights;
+      for (let i = 0; i < heights.length; i++) {
+        const bar = barRefs.current[i];
+        if (bar) bar.style.height = `${heights[i]}px`;
+      }
+    };
+
     // Initialize recorder
     recorderRef.current = new AudioRecorder(
-      (level) => {
-        setAudioLevel(level);
-        window.electronAPI.sendAudioLevel(level);
-      },
+      applyLevel,
       (pcm16) => {
         window.electronAPI.sendLiveAudioChunk?.(pcm16);
+      },
+      () => {
+        window.electronAPI.finishLiveAudio?.();
       }
     );
 
@@ -91,17 +110,13 @@ export const FloatingHUD: React.FC = () => {
       }
     });
 
-    // Direct level updates if needed
-    const unsubLevel = window.electronAPI.onAudioLevelChange((lvl: number) => {
-      setAudioLevel(lvl);
-    });
-
     return () => {
+      recorderRef.current?.discard();
+      recorderRef.current = null;
       unsubStart();
       unsubStop();
       unsubCancel();
       unsubHUD();
-      unsubLevel();
     };
   }, []);
 
@@ -118,21 +133,18 @@ export const FloatingHUD: React.FC = () => {
 
   // Render animated sound wave bars
   const renderWaveform = () => {
-    const bars = [0.4, 0.7, 1.0, 0.8, 0.5];
     return (
       <div className="flex items-center gap-1 h-5 px-1">
-        {bars.map((weight, idx) => {
-          // Dynamic scale based on real-time microphone volume
-          const scale = Math.max(0.2, Math.min(1.0, audioLevel * 2.2 * weight + 0.15));
-          const heightPx = Math.round(scale * 18);
-          return (
-            <div
-              key={idx}
-              className="w-1 bg-red-400 rounded-full transition-all duration-75"
-              style={{ height: `${heightPx}px` }}
-            />
-          );
-        })}
+        {WAVE_WEIGHTS.map((_, idx) => (
+          <div
+            key={idx}
+            ref={(el) => {
+              barRefs.current[idx] = el;
+            }}
+            className="w-1 bg-red-400 rounded-full transition-all duration-75"
+            style={{ height: `${heightsRef.current[idx] ?? 4}px` }}
+          />
+        ))}
       </div>
     );
   };

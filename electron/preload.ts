@@ -45,8 +45,8 @@ export const electronAPI = {
     ipcRenderer.send('stream-audio-chunk', pcm16Buffer);
   },
 
-  sendAudioLevel: (level: number) => {
-    ipcRenderer.send('audio-level', level);
+  finishLiveAudio: () => {
+    ipcRenderer.send('finish-live-audio');
   },
 
   // Manual Trigger
@@ -81,12 +81,6 @@ export const electronAPI = {
     const handler = (_event: any, state: HUDState) => callback(state);
     ipcRenderer.on('hud-state-change', handler);
     return () => ipcRenderer.removeListener('hud-state-change', handler);
-  },
-
-  onAudioLevelChange: (callback: (level: number) => void) => {
-    const handler = (_event: any, level: number) => callback(level);
-    ipcRenderer.on('audio-level-update', handler);
-    return () => ipcRenderer.removeListener('audio-level-update', handler);
   },
 
   onSettingsChanged: (callback: (settings: AppSettings) => void) => {

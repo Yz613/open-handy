@@ -216,7 +216,7 @@ class KeyListenerService {
     }
 
     func pollHotkey() {
-        if !pasteInFlight, let tap = eventTapPort {
+        if !pasteInFlight, let tap = eventTapPort, !CGEvent.tapIsEnabled(tap: tap) {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
         guard spec.singleModifier != nil else { return }

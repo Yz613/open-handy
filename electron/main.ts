@@ -36,6 +36,10 @@ let pendingPaste: ((ok: boolean) => void) | null = null;
 let recordingToken = 0;
 let accessibilityWarned = false;
 let activeLiveSession: VercelLiveTranscriptionSession | null = null;
+let liveFinishPromise: Promise<STTResult> | null = null;
+let hudDisplayId: number | null = null;
+let trayIdleIcon: NativeImage | null = null;
+let trayRecordingIcon: NativeImage | null = null;
 
 // Ensure single instance lock so clicking the app in Applications focuses the existing instance
 const gotTheLock = app.requestSingleInstanceLock();
@@ -54,13 +58,21 @@ const TRAY_IDLE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 const TRAY_RECORDING_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAoUlEQVR4nO2WOQ6AIBBFZ344kNZyfK31RlpqjOAsEGLkVSbyF4KARJ3O32GLaJ+GPWm4bCpPLhVsLYIa4ZrxqBGu0aFWuFSPmuESn+ByntfzOY4mCzbN/hp8J1PkaWeAGgO1Ijd7yXt3gcLgewXiy9eu3A2gxrDrIFKcA6nLKZAH4+EjXgJW3u0WH3jE3nBRAU8JiQ4lzSzjmRr/E3Y61JoDxbY+l9zw4b0AAAAASUVORK5CYII=';
 
 function createTrayIcon(recording: boolean = false): NativeImage {
-  const dataUrl = recording ? TRAY_RECORDING_DATA_URL : TRAY_IDLE_DATA_URL;
-  const img = nativeImage.createFromDataURL(dataUrl);
-  const resized = img.resize({ width: 18, height: 18 });
-  if (!recording) {
-    resized.setTemplateImage(true);
+  if (recording) {
+    if (!trayRecordingIcon) {
+      trayRecordingIcon = nativeImage
+        .createFromDataURL(TRAY_RECORDING_DATA_URL)
+        .resize({ width: 18, height: 18 });
+    }
+    return trayRecordingIcon;
   }
-  return resized;
+  if (!trayIdleIcon) {
+    trayIdleIcon = nativeImage
+      .createFromDataURL(TRAY_IDLE_DATA_URL)
+      .resize({ width: 18, height: 18 });
+    trayIdleIcon.setTemplateImage(true);
+  }
+  return trayIdleIcon;
 }
 
 function updateTrayMenu() {
@@ -159,11 +171,6 @@ function hudBounds() {
     width: hudWidth,
     height: hudHeight,
   };
-}
-
-function positionHUD() {
-  if (!hudWindow) return;
-  hudWindow.setBounds(hudBounds());
 }
 
 function probeDevServer(page: string): Promise<boolean> {
@@ -563,20 +570,41 @@ function registerGlobalHotkey(targetHotkey?: string): { success: boolean; error?
   }
 }
 
+function revealHUD() {
+  if (!hudWindow || hudWindow.isDestroyed()) return;
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const visible = hudWindow.isVisible();
+  if (visible && display.id === hudDisplayId) return;
+
+  const displayChanged = display.id !== hudDisplayId;
+  hudDisplayId = display.id;
+  if (!visible || displayChanged) {
+    const area = display.workArea;
+    hudWindow.setBounds({
+      x: Math.round(area.x + (area.width - 440) / 2),
+      y: Math.round(area.y + area.height - 120 - 16),
+      width: 440,
+      height: 120,
+    });
+  }
+  if (!visible) {
+    hudWindow.setAlwaysOnTop(true, 'screen-saver');
+    hudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    hudWindow.showInactive();
+  }
+  hudWindow.moveTop();
+}
+
 function setHUDState(state: HUDState) {
   queuedHUDState = state;
   if (!hudWindow || hudWindow.isDestroyed()) return;
 
   if (state.status === 'idle') {
-    hudWindow.hide();
+    hudDisplayId = null;
+    if (hudWindow.isVisible()) hudWindow.hide();
   } else {
-    positionHUD();
-    hudWindow.setAlwaysOnTop(true, 'screen-saver');
-    hudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    if (!hudWindow.isVisible()) {
-      hudWindow.showInactive();
-    }
-    hudWindow.moveTop();
+    revealHUD();
   }
 
   if (hudReady && !hudWindow.webContents.isLoading()) {
@@ -601,6 +629,7 @@ function startRecording(fromApp?: string, pid?: number, bundleId?: string) {
     activeLiveSession.cancel();
     activeLiveSession = null;
   }
+  liveFinishPromise = null;
   activeLiveSession = createVercelLiveSession(store.getSettings());
 
   if ((fromApp && fromApp.trim()) || (pid && pid > 0) || (bundleId && bundleId.trim())) {
@@ -655,6 +684,7 @@ function cancelRecording() {
     activeLiveSession.cancel();
     activeLiveSession = null;
   }
+  liveFinishPromise = null;
 
   if (recordingTimer) {
     clearInterval(recordingTimer);
@@ -809,6 +839,7 @@ function setupIPCHandlers() {
       activeLiveSession.cancel();
       activeLiveSession = null;
     }
+    liveFinishPromise = null;
     if (recordingTimer) {
       clearInterval(recordingTimer);
       recordingTimer = null;
@@ -826,11 +857,12 @@ function setupIPCHandlers() {
     }
   });
 
-  // Audio level streaming from renderer to HUD visualizer
-  ipcMain.on('audio-level', (_event, level) => {
-    if (hudWindow && isRecording) {
-      hudWindow.webContents.send('audio-level-update', level);
-    }
+  // Fired once the mic graph has stopped, before the renderer finishes encoding WAV.
+  ipcMain.on('finish-live-audio', () => {
+    if (!activeLiveSession || liveFinishPromise) return;
+    const pending = activeLiveSession.finish(4500);
+    pending.catch(() => {});
+    liveFinishPromise = pending;
   });
 
   // Process the recorded audio
@@ -838,10 +870,13 @@ function setupIPCHandlers() {
     const settings = store.getSettings();
     const audioBuffer = Buffer.from(arrayBuffer);
     const liveSession = activeLiveSession;
+    const pendingFinish = liveFinishPromise;
     activeLiveSession = null;
+    liveFinishPromise = null;
 
     if (audioBuffer.length < 1000) {
       liveSession?.cancel();
+      pendingFinish?.catch(() => {});
       setHUDState({ status: 'error', message: 'Recording too short or empty.' });
       setTimeout(() => setHUDState({ status: 'idle' }), 2500);
       return;
@@ -852,13 +887,14 @@ function setupIPCHandlers() {
       let sttResult: STTResult;
       if (!sttProviderConfigured(settings)) {
         liveSession?.cancel();
+        pendingFinish?.catch(() => {});
         setHUDState({ status: 'transcribing', providerName: 'this Mac' });
         sttResult = await transcribeLocally(audioBuffer);
       } else {
         setHUDState({ status: 'transcribing', providerName: settings.activeSttProvider.toUpperCase() });
-        if (liveSession) {
+        if (pendingFinish || liveSession) {
           try {
-            sttResult = await liveSession.finish(4500);
+            sttResult = await (pendingFinish ?? liveSession!.finish(4500));
           } catch (liveErr) {
             console.warn('Live WebSocket transcription fallback to buffer:', liveErr);
             sttResult = await transcribeAudio(audioBuffer, mimeType, settings);
@@ -938,22 +974,22 @@ function setupIPCHandlers() {
         charCount: finalText.length,
         wordCount: finalText.split(/\s+/).filter(Boolean).length,
       };
-      store.addHistoryRecord(record);
-
-      // Notify settings window if open
-      if (settingsWindow) {
-        settingsWindow.webContents.send('history-updated', record);
-        settingsWindow.webContents.send('usage-updated', store.getUsageStats());
-      }
-      updateTrayMenu();
-
-      // 5. Visual HUD feedback
+      // 5. Visual HUD feedback before history persistence and the tray rebuild.
       const preview = finalText.length > 35 ? finalText.slice(0, 35) + '...' : finalText;
       if (settings.autoPaste && pasteSuccess) {
         setHUDState({ status: 'pasted', previewText: preview });
       } else {
         setHUDState({ status: 'copied', previewText: preview });
       }
+
+      setImmediate(() => {
+        store.addHistoryRecord(record);
+        if (settingsWindow && !settingsWindow.isDestroyed()) {
+          settingsWindow.webContents.send('history-updated', record);
+          settingsWindow.webContents.send('usage-updated', store.getUsageStats());
+        }
+        updateTrayMenu();
+      });
 
       // Smooth dismiss
       setTimeout(() => {

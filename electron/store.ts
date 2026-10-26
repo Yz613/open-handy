@@ -301,6 +301,8 @@ export class AppStore {
   private settings: AppSettings;
   private history: DictationRecord[] = [];
   private usage: StoredUsageData;
+  private historyQueue: Promise<void> = Promise.resolve();
+  private usageQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     const userData = getUserDataDir();
@@ -453,12 +455,19 @@ export class AppStore {
     return initialUsage;
   }
 
-  private saveUsage(data: StoredUsageData = this.usage): void {
-    try {
-      fs.writeFileSync(this.usagePath, JSON.stringify(data, null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to save usage.json', e);
+  private enqueueWrite(kind: 'history' | 'usage', filePath: string, payload: string): void {
+    const write = () => fs.promises.writeFile(filePath, payload, 'utf8').then(() => undefined, (err) => {
+      console.error(`Failed to save ${filePath}`, err);
+    });
+    if (kind === 'history') {
+      this.historyQueue = this.historyQueue.then(write, write);
+    } else {
+      this.usageQueue = this.usageQueue.then(write, write);
     }
+  }
+
+  private saveUsage(data: StoredUsageData = this.usage): void {
+    this.enqueueWrite('usage', this.usagePath, JSON.stringify(data));
   }
 
   public getHistory(): DictationRecord[] {
@@ -471,11 +480,7 @@ export class AppStore {
     if (this.history.length > 200) {
       this.history = this.history.slice(0, 200);
     }
-    try {
-      fs.writeFileSync(this.historyPath, JSON.stringify(this.history, null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to save history', e);
-    }
+    this.enqueueWrite('history', this.historyPath, JSON.stringify(this.history));
 
     // Increment cumulative usage statistics
     const dur = record.durationSeconds || 0;
@@ -536,20 +541,12 @@ export class AppStore {
 
   public clearHistory(): void {
     this.history = [];
-    try {
-      fs.writeFileSync(this.historyPath, JSON.stringify([], null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to clear history', e);
-    }
+    this.enqueueWrite('history', this.historyPath, '[]');
   }
 
   public deleteHistoryRecord(id: string): void {
     this.history = this.history.filter(item => item.id !== id);
-    try {
-      fs.writeFileSync(this.historyPath, JSON.stringify(this.history, null, 2), 'utf8');
-    } catch (e) {
-      console.error('Failed to delete history record', e);
-    }
+    this.enqueueWrite('history', this.historyPath, JSON.stringify(this.history));
   }
 }
 
